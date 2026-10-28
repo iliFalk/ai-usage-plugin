@@ -1310,6 +1310,13 @@ Panel {
             }
           }
 
+          GraphicRow {
+            width: usageSection.width
+            visible: root.entry
+              && String(Model.baseProvider(root.entry.id)) === "opencode-go"
+              && root.entrySections.length > 0
+          }
+
           Text {
             visible: !root.settingsOpen && !root.loading && !root.entry && root.statusMessage() === ""
             width: parent.width
@@ -1526,6 +1533,136 @@ Panel {
       font.family: root.fontFamily
       font.pixelSize: Style.font.caption
       wrapMode: Text.WordWrap
+    }
+  }
+
+  component GraphicRow: Column {
+    id: graphicRow
+    property var row: null
+    spacing: Style.space(8)
+
+    readonly property bool forOpenCodeGo: root.entry
+      ? String(Model.baseProvider(root.entry.id)) === "opencode-go"
+      : false
+
+    Text {
+      width: parent.width
+      text: root.tr("graphic.title")
+      textFormat: Text.PlainText
+      color: root.foreground
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.bodySmall
+      font.bold: true
+      visible: graphicRow.forOpenCodeGo
+    }
+
+    Canvas {
+      id: graphicCanvas
+      width: parent.width
+      height: graphicRow.forOpenCodeGo ? 150 : 0
+      visible: graphicRow.forOpenCodeGo
+
+      function metricByLabel(label) {
+        var sections = root.entrySections || []
+        for (var i = 0; i < sections.length; i++) {
+          var s = sections[i]
+          if (s && s.type === "metric" && String(s.label || "") === label)
+            return s
+        }
+        return null
+      }
+
+      function elapsedFrac(resetAt, windowSecs) {
+        if (!resetAt || !windowSecs) return 0
+        var resetMs = new Date(String(resetAt)).getTime()
+        var nowMs = Number(root.nowMs)
+        if (!isFinite(resetMs)) return 0
+        var startMs = resetMs - Number(windowSecs) * 1000
+        var elapsed = nowMs - startMs
+        return Math.max(0, Math.min(1, elapsed / Number(windowSecs) / 1000))
+      }
+
+      function monthlyElapsedFrac(resetAt) {
+        // OpenCode Go does not report the monthly cycle length (it follows the
+        // subscriber's billing date, 28/29/31 days), so estimate a 30-day
+        // cycle purely to place the monthly marker.
+        if (!resetAt) return 0
+        var resetMs = new Date(String(resetAt)).getTime()
+        var nowMs = Number(root.nowMs)
+        if (!isFinite(resetMs)) return 0
+        var startMs = resetMs - 30 * 86400000
+        var elapsed = nowMs - startMs
+        return Math.max(0, Math.min(1, elapsed / (30 * 86400000)))
+      }
+
+      onPaint: {
+        if (!graphicRow.forOpenCodeGo) return
+        var ctx = getContext("2d")
+        if (!ctx) return
+        var w = graphicCanvas.width
+        var h = graphicCanvas.height
+        var padX = Style.space(6)
+        var padY = Style.space(6)
+        var plotLeft = padX
+        var plotRight = w - padX
+        var plotTop = padY
+        var plotBottom = h - padY
+        var plotW = plotRight - plotLeft
+        var plotH = plotBottom - plotTop
+
+        function xFor(frac) { return plotLeft + frac * plotW }
+        function yFor(pct) { return plotBottom - Math.min(Math.max(pct, 0), 100) / 100 * plotH }
+
+        ctx.clearRect(0, 0, w, h)
+
+        // Axes
+        ctx.strokeStyle = root.dim
+        ctx.lineWidth = 1
+        ctx.beginPath()
+        ctx.moveTo(plotLeft, plotBottom)
+        ctx.lineTo(plotRight, plotBottom)
+        ctx.moveTo(plotLeft, plotBottom)
+        ctx.lineTo(plotLeft, plotTop)
+        ctx.stroke()
+
+        // Linear expected usage: on pace from 0 to 100 across the window
+        ctx.strokeStyle = root.alpha(root.foreground, 0.35)
+        ctx.lineWidth = 1
+        ctx.beginPath()
+        ctx.moveTo(xFor(0), yFor(0))
+        ctx.lineTo(xFor(1), yFor(100))
+        ctx.stroke()
+
+        // Weekly usage line
+        var weekly = metricByLabel("Weekly (7d)")
+        var weeklyPct = weekly ? weekly.percent : 0
+        var weeklyFrac = weekly ? elapsedFrac(weekly.reset_at, weekly.window_secs) : 0
+        ctx.strokeStyle = root.hexGreen
+        ctx.lineWidth = 2
+        ctx.beginPath()
+        ctx.moveTo(xFor(0), yFor(0))
+        ctx.lineTo(xFor(weeklyFrac), yFor(weeklyPct))
+        ctx.stroke()
+        ctx.fillStyle = root.hexGreen
+        ctx.beginPath()
+        ctx.arc(xFor(weeklyFrac), yFor(weeklyPct), 3, 0, 2 * Math.PI)
+        ctx.fill()
+
+        // Monthly usage line
+        var monthly = metricByLabel("Monthly")
+        var monthlyPct = monthly ? monthly.percent : 0
+        var monthlyFrac = monthly ? monthlyElapsedFrac(monthly.reset_at) : 0
+        ctx.strokeStyle = root.hexOrange
+        ctx.lineWidth = 2
+        ctx.beginPath()
+        ctx.moveTo(xFor(0), yFor(0))
+        ctx.lineTo(xFor(monthlyFrac), yFor(monthlyPct))
+        ctx.stroke()
+        ctx.fillStyle = root.hexOrange
+        ctx.beginPath()
+        ctx.arc(xFor(monthlyFrac), yFor(monthlyPct), 3, 0, 2 * Math.PI)
+        ctx.fill()
+      }
     }
   }
 }
