@@ -516,7 +516,7 @@ assert.match(settingsViewSource, /function\s+collectVendorToggles\s*\(/);
 assert.match(settingsViewSource, /function\s+setVendorOverride\s*\(/);
 assert.match(
   settingsViewSource,
-  /Model\.buildSettingsPatch\(selectedPrimary,\s*collectChanges\(\),\s*collectVendorToggles\(\)\)/
+  /Model\.buildSettingsPatch\(selectedPrimary,\s*collectChanges\(\),\s*collectVendorToggles\(\)\s*(,\s*.*)?\)/
 );
 assert.match(settingsViewSource, /root\.tr\("credentials\.paste"/);
 assert.match(panelSource, /function\s+openNousLogin\s*\(/);

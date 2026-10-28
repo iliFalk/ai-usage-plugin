@@ -1648,10 +1648,16 @@ Panel {
         ctx.arc(xFor(weeklyFrac), yFor(weeklyPct), 3, 0, 2 * Math.PI)
         ctx.fill()
 
-        // Monthly usage line
+        // Monthly usage line. When the report carries an exact window length
+        // (cycle day configured in settings), pace against it; otherwise fall
+        // back to a 30-day estimate.
         var monthly = metricByLabel("Monthly")
         var monthlyPct = monthly ? monthly.percent : 0
-        var monthlyFrac = monthly ? monthlyElapsedFrac(monthly.reset_at) : 0
+        var monthlyFrac = monthly
+          ? monthly.window_secs
+            ? elapsedFrac(monthly.reset_at, monthly.window_secs)
+            : monthlyElapsedFrac(monthly.reset_at)
+          : 0
         ctx.strokeStyle = root.hexOrange
         ctx.lineWidth = 2
         ctx.beginPath()

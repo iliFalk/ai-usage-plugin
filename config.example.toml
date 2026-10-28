@@ -617,6 +617,13 @@ api_key_env = "OPENCODE_GO_API_KEY"
 # api_key = "..."            # or export OPENCODE_GO_API_KEY; wins over CLI stores
 # auth_paths = ["/custom/opencode/opencode.db"]  # replaces the search list
 
+# Day of the month (1-28) the OpenCode Go billing cycle resets on. OpenCode Go
+# reports only `resetsAt` for the monthly window, never its length (it follows
+# the subscriber's billing date, 28/29/30/31 days). Set this so the panel can
+# compute an exact monthly window and pace usage against it; leave unset to
+# keep a reset countdown with a 30-day estimate for the usage graphic.
+# monthly_cycle_day = 15
+
 # Command Code (commandcode.ai). Leave disabled if you do not use it. To opt in,
 # set enabled = true; the OAuth credential written by the official `commandcode`
 # CLI is reused as-is, never refreshed or rewritten.

@@ -1890,6 +1890,8 @@ mod tests {
             notify_enabled: true,
             notify_enabled_dirty: false,
             notify_threshold: KeyInput::from_config(Some("97")),
+            monthly_cycle_day: None,
+            monthly_cycle_day_dirty: false,
             status: String::new(),
             scroll: 0,
             picker: None,

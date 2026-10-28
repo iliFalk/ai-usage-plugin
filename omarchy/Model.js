@@ -1790,7 +1790,7 @@ function parseSettingsSnapshot(raw) {
 // optional array of {id, enabled}; it is included in the payload only when a
 // toggle is pending, so a display-only save keeps the older patch shape a
 // pre-#244 binary still accepts.
-function buildSettingsPatch(primary, changes, vendorToggles) {
+function buildSettingsPatch(primary, changes, vendorToggles, monthlyCycleDay) {
   var primaryId = settingsId(primary)
   var rawPrimary = String(primary || "").trim()
   if (rawPrimary !== "" && primaryId === "")
@@ -1826,11 +1826,19 @@ function buildSettingsPatch(primary, changes, vendorToggles) {
     seenVendors.push(vendorId)
     vendors[vendorId] = toggle.enabled
   }
-  if (primaryId === "" && seen.length === 0 && seenVendors.length === 0)
+  if (monthlyCycleDay !== undefined) {
+    if (monthlyCycleDay !== null
+        && (typeof monthlyCycleDay !== "number" || !Number.isInteger(monthlyCycleDay)
+            || monthlyCycleDay < 1 || monthlyCycleDay > 28))
+      return { ok: false, error: "Monthly cycle day must be null or an integer between 1 and 28.", payload: "" }
+  }
+  if (primaryId === "" && seen.length === 0 && seenVendors.length === 0
+      && monthlyCycleDay === undefined)
     return { ok: false, error: "There are no settings changes to save.", payload: "" }
   var patch = { schema_version: 1, keys: keys }
   if (primaryId !== "") patch.primary = primaryId
   if (seenVendors.length > 0) patch.vendors = vendors
+  if (monthlyCycleDay !== undefined) patch.monthly_cycle_day = monthlyCycleDay
   return {
     ok: true,
     error: "",

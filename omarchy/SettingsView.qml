@@ -35,6 +35,11 @@ Column {
 
   property var snapshot: ({ primary_choices: [], keys: [], vendors: [] })
   property string selectedPrimary: ""
+  // OpenCode Go monthly billing-cycle reset day (1-28), exposed by the
+  // settings snapshot and written back through `settings apply`.
+  property var monthlyCycleDay: null
+  property var monthlyCycleDayInput: null
+  property bool monthlyCycleDayPending: false
   // Pending provider on/off overrides (#244), keyed by provider id. Rebuilt
   // (never mutated) so the Toggle bindings re-evaluate.
   property var vendorOverrides: ({})
@@ -52,7 +57,7 @@ Column {
   property bool saving: false
   readonly property bool canSave: !loading && !saving
     && (selectedPrimary !== "" || snapshot.primary_choices.length === 0
-        || vendorPendingCount > 0)
+        || vendorPendingCount > 0 || monthlyCycleDayPending)
 
   signal saved()
   signal fallbackRequested()
@@ -109,6 +114,9 @@ Column {
     }
     snapshot = parsed
     selectedPrimary = parsed.primary
+    monthlyCycleDay = parsed.monthly_cycle_day
+    monthlyCycleDayInput = parsed.monthly_cycle_day
+    monthlyCycleDayPending = false
   }
 
   function collectChanges() {
@@ -201,7 +209,10 @@ Column {
 
   function save() {
     if (!canSave) return
-    var built = Model.buildSettingsPatch(selectedPrimary, collectChanges(), collectVendorToggles())
+    // Only send the cycle day when the user changed it; leaving it undefined
+    // keeps the existing configured value untouched.
+    var cycleDay = monthlyCycleDayPending ? monthlyCycleDay : undefined
+    var built = Model.buildSettingsPatch(selectedPrimary, collectChanges(), collectVendorToggles(), cycleDay)
     if (!built.ok) {
       errorText = built.error
       return
@@ -235,6 +246,9 @@ Column {
     }
     saved()
     load()
+    // The value is now persisted; reload refreshes the snapshot (and the
+    // bound monthlyCycleDay) so the pending flag can be cleared.
+    monthlyCycleDayPending = false
     // load() clears stale status before refreshing the snapshot, so set the
     // confirmation afterwards and keep it visible while the refresh runs.
     statusText = root.tr("status.saved")
@@ -377,6 +391,24 @@ Column {
         fontFamily: root.fontFamily
         enabled: !root.saving
         onClicked: root.showAllRequested(!root.showAll)
+      }
+      Dropdown {
+        width: parent.width
+        showLabel: false
+        value: monthlyCycleDayInput === null || monthlyCycleDayInput === undefined
+          ? null : monthlyCycleDayInput
+        options: (function () {
+          var options = [{ value: null, label: root.tr("monthly_cycle_day_unset") }]
+          for (var d = 1; d <= 28; d++) options.push({ value: d, label: String(d) })
+          return options
+        })()
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        enabled: !root.saving
+        onChanged: function(value) {
+          monthlyCycleDayInput = value
+          monthlyCycleDayPending = value !== monthlyCycleDay
+        }
       }
     }
   }

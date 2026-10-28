@@ -1358,6 +1358,7 @@ mod tests {
             last_error: None,
             fetched_at: None,
             display: Default::default(),
+            monthly_cycle_day: None,
         }));
 
         let tab = TabId::account("gmail");
@@ -1404,6 +1405,7 @@ mod tests {
             last_error: None,
             fetched_at: None,
             display: Default::default(),
+            monthly_cycle_day: None,
         }));
         let projected = RefreshInput::from_tab(
             &TabId::vendor(crate::vendor::VendorId::Openai),
@@ -1456,6 +1458,7 @@ mod tests {
             last_error: None,
             fetched_at: None,
             display: Default::default(),
+            monthly_cycle_day: None,
         }));
         let projected = RefreshInput::from_tab(
             &TabId::vendor(crate::vendor::VendorId::Supergrok),
@@ -1500,6 +1503,7 @@ mod tests {
             last_error: None,
             fetched_at: None,
             display: Default::default(),
+            monthly_cycle_day: None,
         }))
     }
 
@@ -1635,6 +1639,7 @@ mod tests {
                     last_error: None,
                     fetched_at: None,
                     display: Default::default(),
+                    monthly_cycle_day: None,
                 }));
                 let now = at(day + 1, 9, 0);
                 let input = RefreshInput::from_tab(&tab, &state, now).expect("ready tab projects");

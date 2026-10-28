@@ -9,7 +9,7 @@
 //! width, so on a wide monitor you get long, readable bars instead of the
 //! 20-char Pango ones the Waybar tooltip is stuck with.
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Datelike, Utc};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -767,7 +767,9 @@ pub(crate) fn sections_with_metadata_for(
                 VendorSnapshot::Minimax(s) => minimax_sections(s, now, pace_tolerance),
                 VendorSnapshot::Kiro(s) => kiro_sections(s, now),
                 VendorSnapshot::NousResearch(s) => nous_sections(s, now, prefs),
-                VendorSnapshot::OpenCodeGo(s) => opencode_go_sections(s, now, pace_tolerance),
+                VendorSnapshot::OpenCodeGo(s) => {
+                    opencode_go_sections(s, now, pace_tolerance, r.monthly_cycle_day)
+                }
                 VendorSnapshot::CommandCode(s) => commandcode_sections(s, now),
                 VendorSnapshot::Ollama(s) => ollama_sections(s, now, pace_tolerance),
                 VendorSnapshot::Custom(s) => custom_sections(s),
@@ -1636,6 +1638,7 @@ fn opencode_go_sections(
     s: &crate::opencode_go::types::Usage,
     now: DateTime<Utc>,
     tol: u32,
+    monthly_cycle_day: Option<u8>,
 ) -> SectionBuilder {
     use crate::opencode_go::vendor::{ROLLING_WINDOW, WEEKLY_WINDOW};
 
@@ -1660,26 +1663,31 @@ fn opencode_go_sections(
         };
         push_window(&mut sections, label, &projected, now, tol, true);
     }
-    // Monthly keeps its reset countdown but no pacing and no `window_secs`:
-    // the cycle follows the subscription date (28/29/31-day months), so no
-    // fixed denominator is exact. `push_metric` (not `push_metric_in_window`)
-    // is what withholds the window from machine-readable frontends.
+    // Monthly keeps its reset countdown. When the user configured a
+    // `monthly_cycle_day` the panel can compute an exact window length from
+    // the previous cycle reset to this one, so machine-readable frontends get
+    // `window_secs` and can pace against it instead of guessing a 30-day cycle.
     if let Some(window) = s.monthly.as_ref() {
         any = true;
         let pct = clamp_pct(window.percent);
-        sections.push_metric(
-            Section::Metric {
-                label: "Monthly".into(),
-                pct,
-                severity: severity_for(i32::from(pct)),
-                value_label: format!("{pct}%"),
-                footnote: format!(
-                    "Resets in {}",
-                    countdown::format(Some(window.resets_at), now)
-                ),
-            },
-            Some(window.resets_at),
-        );
+        let metric = Section::Metric {
+            label: "Monthly".into(),
+            pct,
+            severity: severity_for(i32::from(pct)),
+            value_label: format!("{pct}%"),
+            footnote: format!(
+                "Resets in {}",
+                countdown::format(Some(window.resets_at), now)
+            ),
+        };
+        match monthly_cycle_day.and_then(|day| monthly_window_secs(window.resets_at, day)) {
+            Some(duration) => {
+                sections.push_metric_in_window(metric, Some(window.resets_at), duration);
+            }
+            None => {
+                sections.push_metric(metric, Some(window.resets_at));
+            }
+        }
     }
     if !any {
         sections.push(Section::Spacer);
@@ -1689,6 +1697,83 @@ fn opencode_go_sections(
         });
     }
     sections
+}
+
+/// Compute the exact length of one OpenCode Go monthly billing cycle from its
+/// next reset instant and the configured cycle day (1-28). OpenCode Go reports
+/// `resetsAt` but never the cycle length, so the panel derives the window from
+/// the subscriber's billing day: the window starts at the previous cycle day
+/// (clamped to the previous month's last day, so Feb 30 never happens) and
+/// ends at `resets_at`. Returns None when the dates don't form a positive
+/// window, in which case callers keep the previous behaviour (no `window_secs`).
+fn monthly_window_secs(resets_at: DateTime<Utc>, cycle_day: u8) -> Option<chrono::Duration> {
+    let end = resets_at.naive_utc().date();
+    let (prev_year, prev_month) = if end.month() == 1 {
+        (end.year() - 1, 12u32)
+    } else {
+        (end.year(), end.month() - 1)
+    };
+    // Last day of the previous month, used to clamp cycle_day (e.g. day 30 in
+    // February, day 31 in a 30-day month). The month after the previous one is
+    // `end`'s own month, so "first day of this month minus one day" is the
+    // previous month's last day and handles the December/January rollover.
+    let prev_month_last = chrono::NaiveDate::from_ymd_opt(end.year(), end.month(), 1)?
+        .checked_sub_days(chrono::Days::new(1))?;
+    let days_in_prev_month = prev_month_last.day() as u32;
+    let start_day = cycle_day.min(days_in_prev_month as u8);
+    let start = chrono::NaiveDate::from_ymd_opt(prev_year, prev_month, start_day.into())?;
+    let seconds = end.signed_duration_since(start).num_seconds();
+    if seconds > 0 {
+        Some(chrono::Duration::seconds(seconds))
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod monthly_window_secs_tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    #[test]
+    fn cycle_length_is_days_in_the_start_month() {
+        // Cycle day 15, reset on Sep 15: window is Aug 15 -> Sep 15 = 31 days.
+        let resets = Utc.with_ymd_and_hms(2026, 9, 15, 0, 0, 0).unwrap();
+        assert_eq!(
+            monthly_window_secs(resets, 15),
+            Some(chrono::Duration::days(31))
+        );
+        // Cycle day 15, reset on Oct 15: window is Sep 15 -> Oct 15 = 30 days.
+        let resets = Utc.with_ymd_and_hms(2026, 10, 15, 0, 0, 0).unwrap();
+        assert_eq!(
+            monthly_window_secs(resets, 15),
+            Some(chrono::Duration::days(30))
+        );
+        // Cycle day 15, reset on Mar 15: window is Feb 15 -> Mar 15 = 28 days (2026 not a leap year).
+        let resets = Utc.with_ymd_and_hms(2026, 3, 15, 0, 0, 0).unwrap();
+        assert_eq!(
+            monthly_window_secs(resets, 15),
+            Some(chrono::Duration::days(28))
+        );
+        // Cycle day 29 in February clamps to Feb's last day: Feb 28 -> Mar 29 = 29 days.
+        let resets = Utc.with_ymd_and_hms(2026, 3, 29, 0, 0, 0).unwrap();
+        assert_eq!(
+            monthly_window_secs(resets, 29),
+            Some(chrono::Duration::days(29))
+        );
+        // Cycle day 1 reset on Jan 1: window is Dec 1 -> Jan 1 = 31 days.
+        let resets = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        assert_eq!(
+            monthly_window_secs(resets, 1),
+            Some(chrono::Duration::days(31))
+        );
+    }
+
+    #[test]
+    fn unknown_cycle_day_returns_none() {
+        let resets = Utc.with_ymd_and_hms(2026, 9, 15, 0, 0, 0).unwrap();
+        assert_eq!(monthly_window_secs(resets, 0), None);
+    }
 }
 
 /// Kiro has a single credit pool, so the panel is a single metric bar plus
@@ -2890,6 +2975,7 @@ mod tests {
             last_error: None,
             fetched_at: Some(now() - chrono::Duration::seconds(15)),
             display,
+            monthly_cycle_day: None,
         }))
     }
 

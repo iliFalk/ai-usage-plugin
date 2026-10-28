@@ -48,6 +48,9 @@ pub struct ReadyTab {
     /// snapshot, so editing config.toml takes effect on the next redraw instead
     /// of waiting for the cache to expire.
     pub display: crate::balance::DisplayPrefs,
+    /// OpenCode Go billing-cycle reset day (1-28), when configured. Only set
+    /// for OpenCode Go tabs; every other vendor leaves it None.
+    pub monthly_cycle_day: Option<u8>,
 }
 
 /// Where a tab's usage comes from: a built-in vendor, or a user-declared
@@ -600,6 +603,10 @@ pub async fn refresh_one(client: &Client, config: &Config, tab: &TabId) -> TabSt
                     // A `[[custom]]` provider states its own percentages; it has
                     // no balance to meter and no headline to choose.
                     TabSource::Custom { .. } => crate::balance::DisplayPrefs::default(),
+                },
+                monthly_cycle_day: match &tab.source {
+                    TabSource::Builtin(VendorId::OpenCodeGo) => config.opencode_go.monthly_cycle_day,
+                    _ => None,
                 },
             }));
             // The single notification hook every frontend shares: TUI, `usage`
@@ -1838,6 +1845,7 @@ mod tests {
             last_error: None,
             fetched_at: Some(fetched_at),
             display: Default::default(),
+            monthly_cycle_day: None,
         }))
     }
 

@@ -551,6 +551,7 @@ mod tests {
             last_error: None,
             fetched_at,
             display: Default::default(),
+            monthly_cycle_day: None,
         }))
     }
 
@@ -594,6 +595,8 @@ mod tests {
             status: String::new(),
             scroll: 0,
             picker: None,
+            monthly_cycle_day: None,
+            monthly_cycle_day_dirty: false,
         }
     }
 

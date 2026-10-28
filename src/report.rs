@@ -595,6 +595,7 @@ fn entry_from_antigravity_account(
         last_error: None,
         fetched_at: Some(account.updated_at),
         display: crate::balance::DisplayPrefs::default(),
+        monthly_cycle_day: None,
     }));
     let mut entry = entry_from_state(tab, &state, now);
     entry.id = format!("antigravity@{}", account.id_suffix);
@@ -1714,6 +1715,7 @@ mod tests {
             last_error: None,
             fetched_at: Some(fetched_at),
             display: Default::default(),
+            monthly_cycle_day: None,
         }));
         let projected = entry_from_state(&TabId::vendor(VendorId::Kiro), &state, Utc::now());
         let rendered = render_json_for_primary(&[projected], None);
@@ -1754,6 +1756,7 @@ mod tests {
                 last_error: None,
                 fetched_at: Some(fetched_at),
                 display: Default::default(),
+                monthly_cycle_day: None,
             }));
             let projected =
                 entry_from_state(&TabId::vendor(VendorId::Synthetic), &state, Utc::now());
@@ -1786,6 +1789,7 @@ mod tests {
             last_error: None,
             fetched_at: Some(fetched_at),
             display: Default::default(),
+            monthly_cycle_day: None,
         }));
         let projected = entry_from_state(&TabId::vendor(VendorId::Synthetic), &state, Utc::now());
         let rendered = render_json_for_primary(&[projected], None);
@@ -2107,6 +2111,7 @@ mod tests {
             last_error: None,
             fetched_at: None,
             display: Default::default(),
+            monthly_cycle_day: None,
         }));
         let projected = entry_from_state(&TabId::vendor(VendorId::Supergrok), &state, Utc::now());
         let rendered = render_json_for_primary(&[projected], None);
@@ -2146,6 +2151,7 @@ mod tests {
             last_error: None,
             fetched_at: None,
             display: Default::default(),
+            monthly_cycle_day: None,
         }));
         let projected = entry_from_state(&TabId::vendor(VendorId::Openai), &state, Utc::now());
         let value: serde_json::Value =
@@ -2187,6 +2193,7 @@ mod tests {
                 last_error: None,
                 fetched_at: None,
                 display: Default::default(),
+                monthly_cycle_day: None,
             }));
             let projected = entry_from_state(&TabId::vendor(VendorId::Openai), &state, Utc::now());
             let value: serde_json::Value =
@@ -2251,6 +2258,7 @@ mod tests {
             last_error: None,
             fetched_at: None,
             display: Default::default(),
+            monthly_cycle_day: None,
         }));
         let projected = entry_from_state(&TabId::vendor(VendorId::Anthropic), &state, Utc::now());
         let value: serde_json::Value =
@@ -2299,6 +2307,7 @@ mod tests {
             last_error: None,
             fetched_at: None,
             display: Default::default(),
+            monthly_cycle_day: None,
         }));
         let projected = entry_from_state(&TabId::vendor(VendorId::Supergrok), &state, Utc::now());
         let value: serde_json::Value =
@@ -2333,6 +2342,7 @@ mod tests {
             last_error: None,
             fetched_at: None,
             display: Default::default(),
+            monthly_cycle_day: None,
         }));
         let projected = entry_from_state(&TabId::vendor(VendorId::Cursor), &state, now);
         let rendered = render_json_for_primary(&[projected], None);
@@ -2382,6 +2392,7 @@ mod tests {
             last_error: None,
             fetched_at: None,
             display: Default::default(),
+            monthly_cycle_day: None,
         }));
         let projected = entry_from_state(&TabId::vendor(VendorId::Grokbot), &state, now);
         let rendered = render_json_for_primary(&[projected], None);
@@ -2435,6 +2446,7 @@ mod tests {
             last_error: None,
             fetched_at: None,
             display: Default::default(),
+            monthly_cycle_day: None,
         }));
         let projected = entry_from_state(&TabId::vendor(VendorId::Anthropic), &state, now);
         let rendered = render_json_for_primary(&[projected], None);
@@ -2557,6 +2569,7 @@ mod tests {
             last_error: None,
             fetched_at: None,
             display: Default::default(),
+            monthly_cycle_day: None,
         }));
         let projected = entry_from_state(&TabId::vendor(VendorId::Kimi), &state, Utc::now());
         // Pair each reset with its own row rather than pinning the row order —
@@ -2638,6 +2651,7 @@ mod tests {
             last_error: None,
             fetched_at: None,
             display: Default::default(),
+            monthly_cycle_day: None,
         }));
         let projected = entry_from_state(&TabId::vendor(VendorId::Openrouter), &state, Utc::now());
         assert!(projected.sections.iter().any(|section| matches!(
@@ -2668,6 +2682,7 @@ mod tests {
             last_error: None,
             fetched_at: None,
             display: Default::default(),
+            monthly_cycle_day: None,
         }));
         let now = "2026-10-09T08:00:00Z".parse().unwrap();
         let projected = entry_from_state(&TabId::vendor(VendorId::Ollama), &state, now);
@@ -2697,6 +2712,7 @@ mod tests {
             last_error: None,
             fetched_at: None,
             display: Default::default(),
+            monthly_cycle_day: None,
         }));
         let projected = entry_from_state(&TabId::vendor(VendorId::Deepseek), &state, Utc::now());
         assert!(projected.sections.iter().any(|section| matches!(
@@ -2755,6 +2771,7 @@ mod tests {
             last_error: None,
             fetched_at: None,
             display: Default::default(),
+            monthly_cycle_day: None,
         }));
         let projected = entry_from_state(&TabId::vendor(VendorId::Cursor), &state, Utc::now());
         assert!(projected.sections.iter().any(|section| matches!(
@@ -2805,6 +2822,7 @@ mod tests {
             last_error: None,
             fetched_at: None,
             display: Default::default(),
+            monthly_cycle_day: None,
         }));
         let projected = entry_from_state(&TabId::vendor(VendorId::Cursor), &state, Utc::now());
         let rendered = render_json_for_primary(std::slice::from_ref(&projected), None);
@@ -2850,6 +2868,7 @@ mod tests {
             last_error: None,
             fetched_at: None,
             display: Default::default(),
+            monthly_cycle_day: None,
         }));
         let projected = entry_from_state(&TabId::vendor(VendorId::Cursor), &state, Utc::now());
         let rendered = render_json_for_primary(std::slice::from_ref(&projected), None);
@@ -2893,6 +2912,7 @@ mod tests {
                 last_error: None,
                 fetched_at: None,
                 display,
+                monthly_cycle_day: None,
             }));
             let entry = entry_from_state(&TabId::vendor(VendorId::Deepseek), &state, Utc::now());
             let rendered = render_json_entries(&[entry]);
@@ -2949,6 +2969,7 @@ mod tests {
                 last_error: None,
                 fetched_at: None,
                 display: Default::default(),
+                monthly_cycle_day: None,
             })),
             Utc::now(),
         );
@@ -3103,6 +3124,7 @@ mod tests {
             last_error: None,
             fetched_at: Some(now),
             display: Default::default(),
+            monthly_cycle_day: None,
         }));
         let projected = entry_from_state(&tab, &state, now);
         assert_eq!(projected.id, "custom:mytool");
