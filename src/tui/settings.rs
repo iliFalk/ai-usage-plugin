@@ -381,6 +381,10 @@ pub struct SettingsState {
     pub notify_enabled_dirty: bool,
     /// `[notifications] threshold`, edited as digits only (1..=100 at save).
     pub notify_threshold: KeyInput,
+    /// OpenCode Go billing-cycle reset day (1-28), when configured. Written
+    // back to `[opencode-go] monthly_cycle_day` only when toggled.
+    pub monthly_cycle_day: Option<u8>,
+    pub monthly_cycle_day_dirty: bool,
     /// One-line status displayed in the footer ("saved …", "save failed …").
     pub status: String,
     /// First body line scrolled into view. The overlay body outgrew every
@@ -461,6 +465,8 @@ impl SettingsState {
             notify_enabled: cfg.notifications.enabled,
             notify_enabled_dirty: false,
             notify_threshold: KeyInput::from_config(Some(&cfg.notifications.threshold.to_string())),
+            monthly_cycle_day: cfg.opencode_go.monthly_cycle_day,
+            monthly_cycle_day_dirty: false,
             status: String::new(),
             scroll: 0,
             picker: None,
@@ -779,6 +785,29 @@ pub fn save_to_path(state: &SettingsState, path: &Path) -> Result<()> {
         }
     }
 
+    // [opencode-go] monthly_cycle_day: written only when the user touched it.
+    if state.monthly_cycle_day_dirty {
+        match state.monthly_cycle_day {
+            Some(day) if (1..=28).contains(&day) => {
+                set_value(
+                    &mut doc,
+                    "opencode-go",
+                    "monthly_cycle_day",
+                    Some(toml_edit::Value::from(i64::from(day))),
+                )?;
+            }
+            Some(_) => {
+                return Err(AppError::Other(format!(
+                    "[opencode-go] monthly_cycle_day must be between 1 and 28, got {:?}",
+                    state.monthly_cycle_day
+                )));
+            }
+            None => {
+                set_value(&mut doc, "opencode-go", "monthly_cycle_day", None)?;
+            }
+        }
+    }
+
     write_config_document(path, &doc)
 }
 
@@ -848,6 +877,12 @@ struct SettingsSnapshot {
     /// Every known provider's on/off switch (#244) — enabled ones and
     /// disabled ones, because turning a provider on is the point.
     vendors: Vec<VendorStatus>,
+    /// OpenCode Go billing-cycle reset day (1-28), when configured. The
+    /// monthly window follows the subscriber's billing date, so this lets
+    /// frontends compute an exact monthly window length instead of guessing
+    /// 30 days. `None` means not configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    monthly_cycle_day: Option<u8>,
 }
 
 #[derive(Debug, Serialize)]
@@ -891,6 +926,9 @@ struct ApplyRequest {
     keys: BTreeMap<String, KeyMutation>,
     #[serde(default)]
     vendors: BTreeMap<String, bool>,
+    /// OpenCode Go billing-cycle reset day (1-28). Absent = leave untouched.
+    #[serde(default)]
+    monthly_cycle_day: Option<u8>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -949,6 +987,7 @@ fn snapshot_from_config_with(
         primary_choices,
         keys,
         vendors,
+        monthly_cycle_day: cfg.opencode_go.monthly_cycle_day,
     }
 }
 
@@ -1043,6 +1082,17 @@ fn state_from_apply_request(cfg: &Config, raw: &str) -> Result<SettingsState> {
             dirty: true,
         };
     }
+
+    if let Some(day) = request.monthly_cycle_day {
+        if !(1..=28).contains(&day) {
+            return Err(AppError::Other(format!(
+                "[opencode-go] monthly_cycle_day must be between 1 and 28, got {day}"
+            )));
+        }
+        state.monthly_cycle_day = Some(day);
+        state.monthly_cycle_day_dirty = true;
+    }
+
     Ok(state)
 }
 

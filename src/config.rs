@@ -1180,6 +1180,15 @@ pub struct OpenCodeGoConfig {
     pub enabled: bool,
     pub api_key_env: String,
     pub api_key: Option<String>,
+    /// Day of the month (1-28) the OpenCode Go billing cycle resets on, when
+    /// the user has configured one. OpenCode Go reports only `resetsAt` for
+    /// the monthly window, never its length (it follows the subscriber's
+    /// billing date, 28/29/30/31 days). With this set the panel can compute an
+    /// exact monthly window length and pace against it instead of guessing a
+    /// 30-day cycle. `None` keeps the previous behaviour: a reset countdown
+    /// with no window length.
+    #[serde(default)]
+    pub monthly_cycle_day: Option<u8>,
     /// Override the search list for the official OpenCode CLI's `auth.json`
     /// and OpenCode 2's `opencode.db`
     /// (`$XDG_DATA_HOME/opencode` or `~/.local/share/opencode`), for a
@@ -1390,6 +1399,7 @@ impl Default for OpenCodeGoConfig {
             enabled: false,
             api_key_env: "OPENCODE_GO_API_KEY".to_string(),
             api_key: None,
+            monthly_cycle_day: None,
             auth_paths: None,
         }
     }
