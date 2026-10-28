@@ -14,6 +14,7 @@ use crate::antigravity;
 use crate::cache::{Cache, DEFAULT_TTL};
 use crate::config::Config;
 use crate::copilot;
+use crate::widget::cli::{Cli, Vendor};
 use crate::cursor;
 use crate::deepinfra;
 use crate::deepseek;
@@ -38,7 +39,6 @@ use crate::synthetic;
 use crate::theme::Theme;
 use crate::vendor::{HTTP_CLIENT_TIMEOUT, RenderOpts, VendorId, VendorOutcome};
 use crate::waybar::WaybarOutput;
-use crate::widget::cli::{Cli, Vendor};
 use crate::widget::pretty::print_pretty;
 use crate::widget::render::{DEFAULT_FORMAT, RenderInput, render_anthropic};
 use crate::zai;
@@ -267,7 +267,7 @@ async fn opencode_go_output(cli: &Cli, config: &Config) -> Result<WaybarOutput> 
     let client = http_client()?;
     let cache = vendor_cache(cli, "opencode-go")?;
     let endpoints = crate::opencode_go::fetch::Endpoints::default();
-    let outcome = match crate::opencode_go::fetch::fetch_snapshot(
+    let (outcome, history) = match crate::opencode_go::fetch::fetch_snapshot(
         &client,
         &api_key,
         &cache,
@@ -276,7 +276,7 @@ async fn opencode_go_output(cli: &Cli, config: &Config) -> Result<WaybarOutput> 
     )
     .await
     {
-        Ok(outcome) => outcome,
+        Ok((outcome, history)) => (outcome, history),
         Err(error) if error.is_transient() => {
             return Ok(WaybarOutput::loading(cli.icon.as_deref()));
         }
@@ -284,12 +284,15 @@ async fn opencode_go_output(cli: &Cli, config: &Config) -> Result<WaybarOutput> 
     };
     let snapshot = outcome.snapshot.clone();
     let vendor_outcome: VendorOutcome = outcome.into();
+    let ocg_cfg = crate::opencode_go::vendor::OpenCodeGoRenderConfig::from_config(&config.opencode_go);
     Ok(crate::opencode_go::vendor::render(
         &vendor_outcome,
         &snapshot,
         &theme_from_cli(cli),
         &RenderOpts::from_cli(cli),
+        &ocg_cfg,
         Utc::now(),
+        &history,
     ))
 }
 

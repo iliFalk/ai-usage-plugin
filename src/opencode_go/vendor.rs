@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 
+use crate::config::OpenCodeGoConfig;
 use crate::countdown;
 use crate::format::{placeholders, substitute, updated_at_hm};
 use crate::pacing::{self, PaceSeverity};
@@ -19,6 +20,84 @@ use super::types::{Usage, Window};
 pub const DEFAULT_FORMAT: &str = "{ocg_rolling_pct}% · {ocg_rolling_reset}";
 const DEFAULT_PLAN: &str = "OpenCode Go";
 const UNAVAILABLE: &str = "—";
+
+/// Dollar limits for the three OpenCode Go windows. Defaults mirror the
+/// Scriptable widget: rolling 5h → $15, weekly → $40, monthly → $80.
+#[derive(Debug, Clone, Default)]
+pub struct OpenCodeGoRenderConfig {
+    pub month_start_ms: Option<i64>,
+    pub month_days: Option<u32>,
+    pub rolling_limit: f64,
+    pub weekly_limit: f64,
+    pub monthly_limit: f64,
+}
+
+impl OpenCodeGoRenderConfig {
+    pub fn from_config(cfg: &OpenCodeGoConfig) -> Self {
+        Self {
+            month_start_ms: cfg.month_start_ms,
+            month_days: cfg.month_days,
+            rolling_limit: cfg.rolling_limit.unwrap_or(15.0),
+            weekly_limit: cfg.weekly_limit.unwrap_or(40.0),
+            monthly_limit: cfg.monthly_limit.unwrap_or(80.0),
+        }
+    }
+}
+
+/// Start of a usage window in ms since the epoch.
+///
+/// - rolling: `resets_at - 5h`
+/// - weekly:  `resets_at - 7d`
+/// - monthly: `month_start_ms` > `month_days` back from reset > calendar month
+pub fn window_start_ms(
+    kind: &str,
+    resets_at: DateTime<Utc>,
+    cfg: &OpenCodeGoRenderConfig,
+) -> Option<i64> {
+    let end_ms = resets_at.timestamp_millis();
+    match kind {
+        "rolling" => Some(end_ms - ROLLING_WINDOW.num_milliseconds()),
+        "weekly" => Some(end_ms - WEEKLY_WINDOW.num_milliseconds()),
+        "monthly" => {
+            if let Some(start) = cfg.month_start_ms {
+                return Some(start);
+            }
+            if let Some(days) = cfg.month_days {
+                return Some(end_ms - (days as i64) * 86_400_000);
+            }
+            // No configured cycle start: monthly pacing is unavailable
+            // (subscriber-dependent cycle length would make any guess wrong).
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Difference between actual percent and linear pace (percent points).
+/// Positive = ahead of linear pace, negative = under.
+fn pace_diff(percent: f64, start_ms: i64, end_ms: i64, now_ms: i64) -> Option<f64> {
+    if end_ms <= start_ms {
+        return None;
+    }
+    let elapsed = ((now_ms - start_ms) as f64) / ((end_ms - start_ms) as f64);
+    let elapsed = elapsed.clamp(0.0, 1.0);
+    Some(percent - elapsed * 100.0)
+}
+
+fn pace_diff_text(pace: Option<f64>) -> (String, &'static str) {
+    match pace {
+        None => ("—".into(), "gray"),
+        Some(p) if p.abs() < 0.5 => ("genau im Plan".into(), "gray"),
+        Some(p) if p > 0.0 => {
+            let color = if p >= 20.0 { "red" } else { "orange" };
+            (format!("+{:.0}% über linear", p), color)
+        }
+        Some(p) => {
+            let color = "green";
+            (format!("{:.0}% unter linear", p), color)
+        }
+    }
+}
 
 /// Window lengths for pacing math. The usage endpoint reports only `status`,
 /// `percent`, and `resetsAt` — never a duration — so these are constants with
@@ -49,23 +128,26 @@ impl From<FetchOutcome> for VendorOutcome {
 /// Keep this signature stable for library callers. Rendering uses the private
 /// tolerance-aware helper so `--pace-tolerance` still applies.
 pub fn build_placeholders(usage: &Usage, now: DateTime<Utc>) -> HashMap<&'static str, String> {
-    build_placeholders_with_plan(DEFAULT_PLAN, usage, now)
+    let cfg = OpenCodeGoRenderConfig::default();
+    build_placeholders_with_plan(DEFAULT_PLAN, usage, now, &cfg)
 }
 
 pub fn build_placeholders_with_plan(
     plan: &str,
     usage: &Usage,
     now: DateTime<Utc>,
+    cfg: &OpenCodeGoRenderConfig,
 ) -> HashMap<&'static str, String> {
-    build_placeholders_with_plan_and_tolerance(plan, usage, pacing::DEFAULT_TOLERANCE, now)
+    build_placeholders_with_plan_and_tolerance(plan, usage, pacing::DEFAULT_TOLERANCE, now, cfg)
 }
 
 fn build_placeholders_with_tolerance(
     usage: &Usage,
     pace_tolerance: u32,
     now: DateTime<Utc>,
+    cfg: &OpenCodeGoRenderConfig,
 ) -> HashMap<&'static str, String> {
-    build_placeholders_with_plan_and_tolerance(DEFAULT_PLAN, usage, pace_tolerance, now)
+    build_placeholders_with_plan_and_tolerance(DEFAULT_PLAN, usage, pace_tolerance, now, cfg)
 }
 
 fn build_placeholders_with_plan_and_tolerance(
@@ -73,15 +155,44 @@ fn build_placeholders_with_plan_and_tolerance(
     usage: &Usage,
     pace_tolerance: u32,
     now: DateTime<Utc>,
+    cfg: &OpenCodeGoRenderConfig,
 ) -> HashMap<&'static str, String> {
     let plan = sanitize(plan);
     let rolling = window_values(usage.rolling.as_ref(), now);
     let weekly = window_values(usage.weekly.as_ref(), now);
     let monthly = window_values(usage.monthly.as_ref(), now);
-    let rolling_pace = window_pacing(usage.rolling.as_ref(), ROLLING_WINDOW, pace_tolerance, now);
-    let weekly_pace = window_pacing(usage.weekly.as_ref(), WEEKLY_WINDOW, pace_tolerance, now);
+    let _now_ms = now.timestamp_millis();
+    let rolling_pace = window_pacing(
+        usage.rolling.as_ref(),
+        "rolling",
+        ROLLING_WINDOW,
+        pace_tolerance,
+        now,
+        cfg,
+    );
+    let weekly_pace = window_pacing(
+        usage.weekly.as_ref(),
+        "weekly",
+        WEEKLY_WINDOW,
+        pace_tolerance,
+        now,
+        cfg,
+    );
+    let monthly_pace = window_pacing(
+        usage.monthly.as_ref(),
+        "monthly",
+        chrono::Duration::zero(), // unused for monthly; start comes from cfg
+        pace_tolerance,
+        now,
+        cfg,
+    );
 
-    placeholders([
+    // Dollar amounts: percent * limit / 100
+    let rolling_usd = rolling.percent.parse::<f64>().unwrap_or(0.0) / 100.0 * cfg.rolling_limit;
+    let weekly_usd = weekly.percent.parse::<f64>().unwrap_or(0.0) / 100.0 * cfg.weekly_limit;
+    let monthly_usd = monthly.percent.parse::<f64>().unwrap_or(0.0) / 100.0 * cfg.monthly_limit;
+
+    let mut vals: Vec<(&'static str, String)> = vec![
         (
             "vendor_short",
             VendorId::OpenCodeGo.short_name().to_string(),
@@ -109,33 +220,79 @@ fn build_placeholders_with_plan_and_tolerance(
         ("ocg_monthly_pct", monthly.percent),
         ("ocg_monthly_reset", monthly.reset),
         ("ocg_monthly_status", monthly.status),
-        // No monthly pacing: the cycle length is subscriber-dependent (see
-        // the `ROLLING_WINDOW` provenance note), so any elapsed/pace figure
-        // would pace against a guessed denominator. Empty strings, matching
-        // what an absent window yields on the Z.AI renderer.
-        ("ocg_monthly_elapsed", String::new()),
-        ("ocg_monthly_pace", String::new()),
-        ("ocg_monthly_pace_indicator", String::new()),
-    ])
+        // Dollar amounts.
+        ("ocg_rolling_usd", format!("{:.2}", rolling_usd)),
+        ("ocg_weekly_usd", format!("{:.2}", weekly_usd)),
+        ("ocg_monthly_usd", format!("{:.2}", monthly_usd)),
+        ("ocg_rolling_limit", format!("{:.2}", cfg.rolling_limit)),
+        ("ocg_weekly_limit", format!("{:.2}", cfg.weekly_limit)),
+        ("ocg_monthly_limit", format!("{:.2}", cfg.monthly_limit)),
+        // Pace diff (percent points ahead/behind linear).
+        (
+            "ocg_rolling_pace_diff",
+            rolling_pace.pace_diff.map_or_else(|| "—".into(), |p| format!("{p:.0}")),
+        ),
+        (
+            "ocg_weekly_pace_diff",
+            weekly_pace.pace_diff.map_or_else(|| "—".into(), |p| format!("{p:.0}")),
+        ),
+        (
+            "ocg_monthly_pace_diff",
+            monthly_pace.pace_diff.map_or_else(|| "—".into(), |p| format!("{p:.0}")),
+        ),
+        // Pace diff text with color hint (used by tooltip).
+        (
+            "ocg_rolling_pace_text",
+            rolling_pace.pace_diff_text.0.clone(),
+        ),
+        (
+            "ocg_weekly_pace_text",
+            weekly_pace.pace_diff_text.0.clone(),
+        ),
+        (
+            "ocg_monthly_pace_text",
+            monthly_pace.pace_diff_text.0.clone(),
+        ),
+    ];
+
+    // Monthly pacing is only available when a cycle start is configured.
+    if cfg.month_start_ms.is_some() || cfg.month_days.is_some() {
+        vals.push(("ocg_monthly_elapsed", monthly_pace.elapsed.clone()));
+        vals.push(("ocg_monthly_pace", monthly_pace.ratio_pace.clone()));
+        vals.push((
+            "ocg_monthly_pace_indicator",
+            monthly_pace.point_pace.clone(),
+        ));
+    } else {
+        vals.push(("ocg_monthly_elapsed", String::new()));
+        vals.push(("ocg_monthly_pace", String::new()));
+        vals.push(("ocg_monthly_pace_indicator", String::new()));
+    }
+
+    placeholders(vals)
 }
 
-/// Elapsed fraction and pace glyphs for one window, as ready placeholder
-/// values. Empty strings when the window is absent, mirroring the Z.AI
-/// renderer's convention; `pacing::calc` degrades to neutral 0/glyphs when
-/// the reset is unreported (which cannot happen for this vendor — `resetsAt`
-/// is required — but keeps the contract explicit).
+/// Elapsed fraction, pace glyphs, and pace-diff for one window.
 #[derive(Default)]
 struct WindowPacing {
     elapsed: String,
     ratio_pace: String,
     point_pace: String,
+    /// Pace diff in percent points (actual − linear). `None` when the window
+    /// start cannot be determined (e.g. monthly without a configured cycle
+    /// start).
+    pace_diff: Option<f64>,
+    /// Formatted pace text + color hint, e.g. ("+15% über linear", "orange").
+    pace_diff_text: (String, &'static str),
 }
 
 fn window_pacing(
     window: Option<&Window>,
+    kind: &str,
     duration: chrono::Duration,
     pace_tolerance: u32,
     now: DateTime<Utc>,
+    cfg: &OpenCodeGoRenderConfig,
 ) -> WindowPacing {
     let Some(window) = window else {
         return WindowPacing::default();
@@ -147,10 +304,26 @@ fn window_pacing(
         duration,
         pace_tolerance,
     );
+
+    // Pace diff: actual % minus linear-elapsed %. Only computable when we
+    // know the window start.
+    let (pace_diff, pace_diff_text) = match window_start_ms(kind, window.resets_at, cfg) {
+        Some(start_ms) => {
+            let end_ms = window.resets_at.timestamp_millis();
+            let now_ms = now.timestamp_millis();
+            let pd = pace_diff(window.percent, start_ms, end_ms, now_ms);
+            let text = pace_diff_text(pd);
+            (pd, text)
+        }
+        None => (None, ("—".into(), "gray")),
+    };
+
     WindowPacing {
         elapsed: p.elapsed_pct.to_string(),
         ratio_pace: p.ratio_pace.glyph().to_string(),
         point_pace: p.point_pace.glyph().to_string(),
+        pace_diff,
+        pace_diff_text: (pace_diff_text.0, pace_diff_text.1),
     }
 }
 
@@ -214,7 +387,9 @@ pub fn render(
     snap: &Usage,
     theme: &Theme,
     opts: &RenderOpts,
+    cfg: &OpenCodeGoRenderConfig,
     now: DateTime<Utc>,
+    history: &crate::opencode_go::fetch::UsageHistory,
 ) -> WaybarOutput {
     render_with_meta(
         snap,
@@ -223,7 +398,9 @@ pub fn render(
         outcome.cache_age,
         theme,
         opts,
+        cfg,
         now,
+        history,
     )
 }
 
@@ -234,11 +411,13 @@ fn render_with_meta(
     cache_age: Option<Duration>,
     theme: &Theme,
     opts: &RenderOpts,
+    cfg: &OpenCodeGoRenderConfig,
     now: DateTime<Utc>,
+    history: &crate::opencode_go::fetch::UsageHistory,
 ) -> WaybarOutput {
     let sev = severity(snap);
     let format = opts.format.as_deref().unwrap_or(DEFAULT_FORMAT);
-    let values = escaped_placeholders_with_tolerance(snap, opts.pace_tolerance, now);
+    let values = escaped_placeholders_with_tolerance(snap, opts.pace_tolerance, now, cfg);
     let mut text = substitute(format, &values);
     if stale {
         text.push_str(" ⏸");
@@ -252,7 +431,9 @@ fn render_with_meta(
         .tooltip_format
         .as_deref()
         .map(|format| substitute(format, &values))
-        .unwrap_or_else(|| render_tooltip(snap, stale, last_error, cache_age, theme, opts, now));
+        .unwrap_or_else(|| {
+            render_tooltip(snap, stale, last_error, cache_age, theme, opts, cfg, now, history)
+        });
 
     WaybarOutput {
         text: bar_text,
@@ -265,8 +446,9 @@ fn escaped_placeholders_with_tolerance(
     usage: &Usage,
     pace_tolerance: u32,
     now: DateTime<Utc>,
+    cfg: &OpenCodeGoRenderConfig,
 ) -> HashMap<&'static str, String> {
-    let mut values = build_placeholders_with_tolerance(usage, pace_tolerance, now);
+    let mut values = build_placeholders_with_tolerance(usage, pace_tolerance, now, cfg);
     for key in [
         "plan",
         "ocg_plan",
@@ -281,6 +463,25 @@ fn escaped_placeholders_with_tolerance(
     values
 }
 
+/// Unicode block sparkline: converts a series of percentages into block
+/// characters (▁▂▃▄▅▆▇█) scaled to the max value in the series.
+fn sparkline(points: &[f64], width: usize) -> String {
+    if points.is_empty() {
+        return String::new();
+    }
+    let blocks = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    let max_p = points.iter().copied().fold(0.0f64, f64::max).max(1.0);
+    let step = points.len().div_euclid(width.max(1));
+    let mut out = String::with_capacity(width);
+    for i in 0..width {
+        let src = i * step;
+        let p = points.get(src).copied().unwrap_or(0.0);
+        let idx = ((p / max_p) * (blocks.len() - 1) as f64).round() as usize;
+        out.push(blocks[idx.min(blocks.len() - 1)]);
+    }
+    out
+}
+
 fn render_tooltip(
     snap: &Usage,
     stale: bool,
@@ -288,7 +489,9 @@ fn render_tooltip(
     cache_age: Option<Duration>,
     theme: &Theme,
     opts: &RenderOpts,
+    cfg: &OpenCodeGoRenderConfig,
     now: DateTime<Utc>,
+    history: &crate::opencode_go::fetch::UsageHistory,
 ) -> String {
     let mut lines = vec![TooltipLine::Center(format!(
         "<span font_weight='bold' foreground='{}'>{}</span>",
@@ -301,9 +504,9 @@ fn render_tooltip(
     let row =
         |w: &UsageWindow| WindowRow::paced(w, now, opts.pace_tolerance, opts.tooltip_pace_pts);
     let mut present = false;
-    for (label, window, duration) in [
-        ("  Rolling (5h)", snap.rolling.as_ref(), ROLLING_WINDOW),
-        ("  Weekly (7d)", snap.weekly.as_ref(), WEEKLY_WINDOW),
+    for (label, window, duration, kind) in [
+        ("  Rolling (5h)", snap.rolling.as_ref(), ROLLING_WINDOW, "rolling"),
+        ("  Weekly (7d)", snap.weekly.as_ref(), WEEKLY_WINDOW, "weekly"),
     ] {
         let Some(window) = window else {
             continue;
@@ -311,10 +514,62 @@ fn render_tooltip(
         present = true;
         let projected = as_usage_window(window, duration);
         push_window_with_row(&mut lines, label, &projected, theme, now, row(&projected));
+        // Dollar line + pace diff below each window row.
+        let pct = window.percent;
+        let usd = pct as f64 / 100.0 * match kind {
+            "rolling" => cfg.rolling_limit,
+            "weekly" => cfg.weekly_limit,
+            _ => 0.0,
+        };
+        let limit = match kind {
+            "rolling" => cfg.rolling_limit,
+            "weekly" => cfg.weekly_limit,
+            _ => 0.0,
+        };
+        let start_ms = window_start_ms(kind, window.resets_at, cfg);
+        let pace = start_ms.map(|s| {
+            let end_ms = window.resets_at.timestamp_millis();
+            let now_ms = now.timestamp_millis();
+            pace_diff(pct as f64, s, end_ms, now_ms)
+        });
+        let (pace_text, pace_color) = match pace {
+            Some(Some(p)) => {
+                let (text, color) = pace_diff_text(Some(p));
+                (text, match color {
+                    "red" => theme.red.clone(),
+                    "orange" => theme.orange.clone(),
+                    "green" => theme.green.clone(),
+                    _ => theme.dim.clone(),
+                })
+            }
+            _ => ("—".into(), theme.dim.clone()),
+        };
+        lines.push(TooltipLine::Body(format!(
+            " <span foreground='{}'>    ${:.2} / ${:.2}</span>",
+            theme.fg,
+            usd,
+            limit
+        )));
+        lines.push(TooltipLine::Body(format!(
+            " <span foreground='{}'>    pace: {}</span>",
+            pace_color, escape(&pace_text)
+        )));
+        // Sparkline: usage trend over the window.
+        let hist = match kind {
+            "rolling" => &history.rolling,
+            "weekly" => &history.weekly,
+            _ => &history.monthly,
+        };
+        if !hist.points.is_empty() {
+            let pts: Vec<f64> = hist.points.iter().map(|pt| pt.p).collect();
+            let line = sparkline(&pts, 28);
+            lines.push(TooltipLine::Body(format!(
+                " <span foreground='{}'>    {}</span>",
+                theme.dim, line
+            )));
+        }
     }
-    // Monthly keeps its reset countdown but no pace glyph: the cycle length
-    // is subscriber-dependent, so there is no exact denominator to pace
-    // against (same reason the report carries no `window_secs` for it).
+    // Monthly: pacing available when cycle start configured.
     if let Some(window) = snap.monthly.as_ref() {
         present = true;
         let pct = utilization_pct(window);
@@ -327,9 +582,48 @@ fn render_tooltip(
         lines.push(TooltipLine::Body(format!(
             "   {bar}  <span font_weight='bold' foreground='{color}'>{pct}%</span>"
         )));
+        let usd = pct as f64 / 100.0 * cfg.monthly_limit;
+        lines.push(TooltipLine::Body(format!(
+            " <span foreground='{}'>    ${:.2} / ${:.2}</span>",
+            theme.fg,
+            usd,
+            cfg.monthly_limit
+        )));
+        let pace_start = window_start_ms("monthly", window.resets_at, cfg);
+        let (pace_text, pace_color) = match pace_start {
+            Some(s) => {
+                let end_ms = window.resets_at.timestamp_millis();
+                let now_ms = now.timestamp_millis();
+                let pd = pace_diff(pct as f64, s, end_ms, now_ms);
+                let (text, color) = pace_diff_text(pd);
+                (
+                    text,
+                    match color {
+                        "red" => theme.red.clone(),
+                        "orange" => theme.orange.clone(),
+                        "green" => theme.green.clone(),
+                        _ => theme.dim.clone(),
+                    },
+                )
+            }
+            None => ("—".into(), theme.dim.clone()),
+        };
+        lines.push(TooltipLine::Body(format!(
+            " <span foreground='{}'>    pace: {}</span>",
+            pace_color, escape(&pace_text)
+        )));
+        // Sparkline: usage trend over the month.
+        if !history.monthly.points.is_empty() {
+            let pts: Vec<f64> = history.monthly.points.iter().map(|pt| pt.p).collect();
+            let line = sparkline(&pts, 28);
+            lines.push(TooltipLine::Body(format!(
+                " <span foreground='{}'>    {}</span>",
+                theme.dim, line
+            )));
+        }
         lines.push(TooltipLine::Body(format!(
             " <span foreground='{}'>  ⏱  Resets in {}</span>",
-            theme.dim,
+            theme.dim.clone(),
             escape(&countdown::format(Some(window.resets_at), now))
         )));
     }
@@ -554,13 +848,17 @@ mod tests {
         assert_eq!(values["ocg_monthly_pace_indicator"], "");
     }
 
+    fn cfg() -> OpenCodeGoRenderConfig {
+        OpenCodeGoRenderConfig::default()
+    }
+
     #[test]
     fn public_builder_keeps_the_default_tolerance_api() {
         let now = at("2026-08-16T18:00:00Z");
         let usage = sample_usage();
         assert_eq!(
             build_placeholders(&usage, now),
-            build_placeholders_with_tolerance(&usage, pacing::DEFAULT_TOLERANCE, now)
+            build_placeholders_with_tolerance(&usage, pacing::DEFAULT_TOLERANCE, now, &cfg())
         );
     }
 
@@ -578,11 +876,11 @@ mod tests {
             monthly: None,
         };
         assert_eq!(
-            build_placeholders_with_tolerance(&usage, 5, now)["ocg_rolling_pace"],
+            build_placeholders_with_tolerance(&usage, 5, now, &cfg())["ocg_rolling_pace"],
             "↑"
         );
         assert_eq!(
-            build_placeholders_with_tolerance(&usage, 10, now)["ocg_rolling_pace"],
+            build_placeholders_with_tolerance(&usage, 10, now, &cfg())["ocg_rolling_pace"],
             "→"
         );
     }
@@ -632,7 +930,9 @@ mod tests {
             &usage,
             &Theme::default(),
             &opts(),
+            &cfg(),
             now,
+            &crate::opencode_go::fetch::UsageHistory::default(),
         );
         assert!(out.tooltip.contains("80% ↑"), "{}", out.tooltip);
     }
@@ -654,7 +954,9 @@ mod tests {
             &usage,
             &Theme::default(),
             &opts(),
+            &cfg(),
             now,
+            &crate::opencode_go::fetch::UsageHistory::default(),
         );
         assert!(out.tooltip.contains("Monthly"), "{}", out.tooltip);
         assert!(out.tooltip.contains("70%"), "{}", out.tooltip);
@@ -681,6 +983,7 @@ mod tests {
             "OpenCode\u{1b}[31m Go",
             &usage,
             at("2026-08-16T18:00:00Z"),
+            &cfg(),
         );
 
         assert!(!values["plan"].contains('\u{1b}'));

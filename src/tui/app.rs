@@ -1021,7 +1021,7 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
             )?;
             let cache = crate::cache::Cache::for_vendor("opencode-go")?;
             let endpoints = crate::opencode_go::fetch::Endpoints::default();
-            let outcome = crate::opencode_go::fetch::fetch_snapshot(
+            let (outcome, _history) = crate::opencode_go::fetch::fetch_snapshot(
                 client,
                 &api_key,
                 &cache,

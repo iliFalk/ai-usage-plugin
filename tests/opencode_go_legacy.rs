@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use ai_usagebar::cache::Cache;
 use ai_usagebar::opencode_go::{creds, fetch, vendor};
+use ai_usagebar::opencode_go::vendor::OpenCodeGoRenderConfig;
 use ai_usagebar::theme::Theme;
 use ai_usagebar::vendor::{RenderOpts, VendorOutcome};
 use serde_json::json;
@@ -65,7 +66,7 @@ async fn v1_credentials_keep_working_without_v2_and_with_valid_or_corrupt_v2_sto
                 .with_body(include_str!("fixtures/opencode-go/usage.json"))
                 .create_async()
                 .await;
-            let outcome = fetch::fetch_snapshot(
+            let (outcome, _history) = fetch::fetch_snapshot(
                 &client,
                 &key,
                 &Cache::at(dir.path().join("cache")),
@@ -78,7 +79,15 @@ async fn v1_credentials_keep_working_without_v2_and_with_valid_or_corrupt_v2_sto
             assert_eq!(outcome.snapshot.weekly.as_ref().unwrap().percent, 45.6);
             assert_eq!(outcome.snapshot.monthly.as_ref().unwrap().percent, 78.9);
             let shared: VendorOutcome = outcome.clone().into();
-            let output = vendor::render(&shared, &outcome.snapshot, &Theme::default(), &opts, now);
+            let output = vendor::render(
+                &shared,
+                &outcome.snapshot,
+                &Theme::default(),
+                &opts,
+                &OpenCodeGoRenderConfig::default(),
+                now,
+                &ai_usagebar::opencode_go::fetch::UsageHistory::default(),
+            );
             assert!(output.text.contains("12.3%"));
             for label in ["Rolling (5h)", "Weekly (7d)", "Monthly"] {
                 assert!(output.tooltip.contains(label));
