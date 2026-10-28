@@ -48,6 +48,9 @@ pub struct ReadyTab {
     /// snapshot, so editing config.toml takes effect on the next redraw instead
     /// of waiting for the cache to expire.
     pub display: crate::balance::DisplayPrefs,
+    /// OpenCode Go billing-cycle reset day (1-28), when configured. Only set
+    /// for OpenCode Go tabs; every other vendor leaves it None.
+    pub monthly_cycle_day: Option<u8>,
 }
 
 /// Where a tab's usage comes from: a built-in vendor, or a user-declared
@@ -601,6 +604,10 @@ pub async fn refresh_one(client: &Client, config: &Config, tab: &TabId) -> TabSt
                     // no balance to meter and no headline to choose.
                     TabSource::Custom { .. } => crate::balance::DisplayPrefs::default(),
                 },
+                monthly_cycle_day: match &tab.source {
+                    TabSource::Builtin(VendorId::OpenCodeGo) => config.opencode_go.monthly_cycle_day,
+                    _ => None,
+                },
             }));
             // The single notification hook every frontend shares: TUI, `usage`
             // report, tray, and the GNOME/KDE/Omarchy frontends all land here.
@@ -821,9 +828,15 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
         VendorId::Synthetic => {
             let (api_key, cache) = api_key_and_cache(config, vendor, tab.account.as_deref())?;
             let endpoints = crate::synthetic::fetch::Endpoints::default();
-            let outcome =
-                crate::synthetic::fetch_snapshot(client, &api_key, &cache, &endpoints, DEFAULT_TTL)
-                    .await?;
+            let outcome = crate::synthetic::fetch_snapshot(
+                client,
+                &api_key,
+                &cache,
+                &endpoints,
+                DEFAULT_TTL,
+                config.synthetic.plan_tier.as_deref(),
+            )
+            .await?;
             Ok(outcome.into())
         }
         VendorId::Moonshot => {
@@ -1832,6 +1845,7 @@ mod tests {
             last_error: None,
             fetched_at: Some(fetched_at),
             display: Default::default(),
+            monthly_cycle_day: None,
         }))
     }
 

@@ -153,6 +153,9 @@ var MESSAGES = {
     "show_as.used": "Used",
     "show_as.left": "Left (remaining)",
     "metric.left": "{percent}% left",
+    "monthly_cycle_day": "Monthly cycle reset day",
+    "monthly_cycle_day_desc": "Day of the month (1-28) the OpenCode Go billing cycle resets on. Leave unset to estimate a 30-day cycle.",
+    "monthly_cycle_day_unset": "Not set",
     "language.help": "Language for the panel and settings. Auto matches your system language.",
     "language.auto": "System (auto)",
     "language.en": "English",
@@ -207,6 +210,10 @@ var MESSAGES = {
     "metrics.window_session": "Session (5h)",
     "metrics.window_weekly": "Weekly (7d)",
     "metrics.window_monthly": "Monthly",
+    "graphic.title": "Expected vs actual usage",
+    "graphic.expected": "Expected (linear)",
+    "graphic.weekly": "Weekly",
+    "graphic.monthly": "Monthly",
     "tip.pool_models": "Cursor Models · {percent}%",
     "tip.pool_other": "Cursor Other Models · {percent}%",
     "tip.pool_demand": "Cursor On Demand · {percent}%",
@@ -218,6 +225,7 @@ var MESSAGES = {
     "reset.due": "Reset due",
     "reset.date": "{month} {day}",
     "reset.in": "Resets in {duration} · {clock}",
+    "reset.regen": "Regenerates {regen} in {duration} · {clock}",
     "updated.unavailable": "Updated time unavailable",
     "updated.just_now": "Updated just now",
     "updated.ago": "Updated {duration} ago",
@@ -289,6 +297,9 @@ var MESSAGES = {
     "show_as.used": "Использовано",
     "show_as.left": "Осталось",
     "metric.left": "осталось {percent}%",
+    "monthly_cycle_day": "День сброса месячного цикла",
+    "monthly_cycle_day_desc": "День месяца (1–28), в который сбрасывается цикл выставления счетов OpenCode Go. Если не задано — цикл оценивается как 30 дней.",
+    "monthly_cycle_day_unset": "Не задано",
     "language.help": "Язык панели и настроек. «Авто» совпадает с языком системы.",
     "language.auto": "Системный (авто)",
     "language.en": "English",
@@ -343,6 +354,10 @@ var MESSAGES = {
     "metrics.window_session": "Сессия (5 ч)",
     "metrics.window_weekly": "Неделя (7 дн.)",
     "metrics.window_monthly": "Месяц",
+    "graphic.title": "Ожидаемое и фактическое использование",
+    "graphic.expected": "Ожидаемое (линейно)",
+    "graphic.weekly": "Неделя",
+    "graphic.monthly": "Месяц",
     "tip.pool_models": "Модели Cursor · {percent}%",
     "tip.pool_other": "Другие модели Cursor · {percent}%",
     "tip.pool_demand": "Cursor по запросу · {percent}%",
@@ -354,6 +369,7 @@ var MESSAGES = {
     "reset.due": "Пора сбросить",
     "reset.date": "{month} {day}",
     "reset.in": "Сброс через {duration} · {clock}",
+    "reset.regen": "Восстановление {regen} через {duration} · {clock}",
     "updated.unavailable": "Время обновления недоступно",
     "updated.just_now": "Обновлено только что",
     "updated.ago": "Обновлено {duration} назад",
@@ -424,6 +440,9 @@ var MESSAGES = {
     "show_as.help": "Se as porcentagens mostram o que você já usou ou o que resta da mesma janela. Aplica imediatamente.",
     "show_as.used": "Usado",
     "show_as.left": "Restante",
+    "monthly_cycle_day": "Dia de reinício do ciclo mensal",
+    "monthly_cycle_day_desc": "Dia do mês (1-28) em que o ciclo de cobrança do OpenCode Go é reiniciado. Se não definido, estima-se um ciclo de 30 dias.",
+    "monthly_cycle_day_unset": "Não definido",
     "metric.left": "{percent}% restante",
     "language.help": "Idioma do painel e das configurações. Automático segue o idioma do sistema.",
     "language.auto": "Sistema (auto)",
@@ -479,6 +498,10 @@ var MESSAGES = {
     "metrics.window_session": "Sessão (5h)",
     "metrics.window_weekly": "Semanal (7d)",
     "metrics.window_monthly": "Mensal",
+    "graphic.title": "Uso esperado vs real",
+    "graphic.expected": "Esperado (linear)",
+    "graphic.weekly": "Semanal",
+    "graphic.monthly": "Mensal",
     "tip.pool_models": "Modelos Cursor · {percent}%",
     "tip.pool_other": "Outros modelos Cursor · {percent}%",
     "tip.pool_demand": "Cursor sob demanda · {percent}%",
@@ -490,6 +513,7 @@ var MESSAGES = {
     "reset.due": "Redefinição devida",
     "reset.date": "{month} {day}",
     "reset.in": "Redefine em {duration} · {clock}",
+    "reset.regen": "Regenera {regen} em {duration} · {clock}",
     "updated.unavailable": "Horário de atualização indisponível",
     "updated.just_now": "Atualizado agora",
     "updated.ago": "Atualizado há {duration}",
@@ -517,6 +541,10 @@ var MESSAGES = {
     "metric.left": "{percent}% 남음",
     "metrics.help": "각 공급자가 표시할 지표를 선택하세요. 끈 지표는 패널, 상단 바, 툴팁에서 사라지고, 최고 백분율을 고를 때 무시됩니다. 마지막으로 켜진 지표는 끌 수 없습니다. 즉시 적용됩니다.",
     "metrics.window_monthly": "월간",
+    "graphic.title": "예상 대비 실제 사용량",
+    "graphic.expected": "예상 (선형)",
+    "graphic.weekly": "주간",
+    "graphic.monthly": "월간",
     "metrics.window_session": "세션 (5시간)",
     "metrics.window_weekly": "주간 (7일)",
     "pool.antigravity_gemini": "Gemini",
@@ -539,6 +567,9 @@ var MESSAGES = {
     "show_as.help": "백분율을 같은 기간에서 사용한 양으로 읽을지 남은 양으로 읽을지 선택합니다. 즉시 적용됩니다.",
     "show_as.left": "남음",
     "show_as.used": "사용함",
+    "monthly_cycle_day": "월간 주기 재설정 날짜",
+    "monthly_cycle_day_desc": "OpenCode Go 청구 주기가 재설정되는 월의 날짜(1-28)입니다. 설정하지 않으면 30일 주기로 추정합니다.",
+    "monthly_cycle_day_unset": "설정 안 함",
     "status.cached": "캐시된 데이터 · 제공자가 새 응답을 주지 못했습니다.",
     "status.refresh_failed": "새로 고치지 못해 이전 보고서를 표시합니다. {error}",
     "status.filter_miss": "‘{id}’와 일치하는 항목이 없습니다. 제공자 설정을 비우거나 ai-usagebar usage --json의 id를 사용하세요.",
@@ -626,6 +657,7 @@ var MESSAGES = {
     "reset.due": "초기화 예정",
     "reset.date": "{month} {day}일",
     "reset.in": "{duration} 후 초기화 · {clock}",
+    "reset.regen": "{duration} 후 {regen} 재생성 · {clock}",
     "updated.unavailable": "업데이트 시각 없음",
     "updated.just_now": "방금 업데이트됨",
     "updated.ago": "{duration} 전 업데이트됨",
@@ -696,6 +728,9 @@ var MESSAGES = {
     "show_as.help": "Si los porcentajes indican lo que ya usaste o lo que queda de la misma ventana. Se aplica de inmediato.",
     "show_as.used": "Usado",
     "show_as.left": "Restante",
+    "monthly_cycle_day": "Día de reinicio del ciclo mensual",
+    "monthly_cycle_day_desc": "Día del mes (1-28) en que se reinicia el ciclo de facturación de OpenCode Go. Si no se define, se estima un ciclo de 30 días.",
+    "monthly_cycle_day_unset": "No definido",
     "metric.left": "{percent}% restante",
     "language.help": "Idioma del panel y de los ajustes. Automático sigue el idioma del sistema.",
     "language.auto": "Sistema (auto)",
@@ -751,6 +786,10 @@ var MESSAGES = {
     "metrics.window_session": "Sesión (5h)",
     "metrics.window_weekly": "Semanal (7d)",
     "metrics.window_monthly": "Mensual",
+    "graphic.title": "Uso esperado vs real",
+    "graphic.expected": "Esperado (lineal)",
+    "graphic.weekly": "Semanal",
+    "graphic.monthly": "Mensual",
     "tip.pool_models": "Modelos de Cursor · {percent}%",
     "tip.pool_other": "Otros modelos de Cursor · {percent}%",
     "tip.pool_demand": "Cursor bajo demanda · {percent}%",
@@ -762,6 +801,7 @@ var MESSAGES = {
     "reset.due": "Reinicio pendiente",
     "reset.date": "{day} {month}",
     "reset.in": "Se reinicia en {duration} · {clock}",
+    "reset.regen": "Regenera {regen} en {duration} · {clock}",
     "updated.unavailable": "Hora de actualización no disponible",
     "updated.just_now": "Actualizado ahora mismo",
     "updated.ago": "Actualizado hace {duration}",
@@ -898,7 +938,7 @@ function isSameLocalDay(a, b) {
 }
 
 // Locale-aware copies of Model.formatReset / formatUpdated for panel display.
-function formatReset(resetAt, nowMs, locale) {
+function formatReset(resetAt, nowMs, locale, regen) {
   if (!resetAt) return ""
   var resetMs = new Date(String(resetAt)).getTime()
   if (!isFinite(resetMs)) return ""
@@ -908,6 +948,13 @@ function formatReset(resetAt, nowMs, locale) {
   var clock = pad2(at.getHours()) + ":" + pad2(at.getMinutes())
   if (!isSameLocalDay(at, new Date(Number(nowMs))))
     clock = t(locale, "reset.date", { month: monthName(locale, at.getMonth()), day: at.getDate() }) + " " + clock
+  if (regen) {
+    return t(locale, "reset.regen", {
+      regen: regen,
+      duration: formatDuration(remaining, locale),
+      clock: clock
+    })
+  }
   return t(locale, "reset.in", {
     duration: formatDuration(remaining, locale),
     clock: clock

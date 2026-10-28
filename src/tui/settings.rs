@@ -127,7 +127,7 @@ pub const KEY_VENDORS: &[KeyVendor] = &[
         section: VendorId::Synthetic.config_section(),
         config_key: "api_key",
         secret_label: "API key",
-        note: "subscription request quota",
+        note: "weekly credit quota",
     },
     KeyVendor {
         id: VendorId::Moonshot,
@@ -381,6 +381,10 @@ pub struct SettingsState {
     pub notify_enabled_dirty: bool,
     /// `[notifications] threshold`, edited as digits only (1..=100 at save).
     pub notify_threshold: KeyInput,
+    /// OpenCode Go billing-cycle reset day (1-28), when configured. Written
+    // back to `[opencode-go] monthly_cycle_day` only when toggled.
+    pub monthly_cycle_day: Option<u8>,
+    pub monthly_cycle_day_dirty: bool,
     /// One-line status displayed in the footer ("saved …", "save failed …").
     pub status: String,
     /// First body line scrolled into view. The overlay body outgrew every
@@ -461,6 +465,8 @@ impl SettingsState {
             notify_enabled: cfg.notifications.enabled,
             notify_enabled_dirty: false,
             notify_threshold: KeyInput::from_config(Some(&cfg.notifications.threshold.to_string())),
+            monthly_cycle_day: cfg.opencode_go.monthly_cycle_day,
+            monthly_cycle_day_dirty: false,
             status: String::new(),
             scroll: 0,
             picker: None,
@@ -711,7 +717,7 @@ pub fn save_to_path(state: &SettingsState, path: &Path) -> Result<()> {
     // neither reads nor supports would be misleading and unsafe.
     if let Some(table) = doc
         .get_mut("copilot")
-        .and_then(toml_edit::Item::as_table_mut)
+        .and_then(toml_edit::Item::as_table_like_mut)
     {
         table.remove("token");
         table.remove("token_env");
@@ -779,6 +785,29 @@ pub fn save_to_path(state: &SettingsState, path: &Path) -> Result<()> {
         }
     }
 
+    // [opencode-go] monthly_cycle_day: written only when the user touched it.
+    if state.monthly_cycle_day_dirty {
+        match state.monthly_cycle_day {
+            Some(day) if (1..=28).contains(&day) => {
+                set_value(
+                    &mut doc,
+                    "opencode-go",
+                    "monthly_cycle_day",
+                    Some(toml_edit::Value::from(i64::from(day))),
+                )?;
+            }
+            Some(_) => {
+                return Err(AppError::Other(format!(
+                    "[opencode-go] monthly_cycle_day must be between 1 and 28, got {:?}",
+                    state.monthly_cycle_day
+                )));
+            }
+            None => {
+                set_value(&mut doc, "opencode-go", "monthly_cycle_day", None)?;
+            }
+        }
+    }
+
     write_config_document(path, &doc)
 }
 
@@ -810,7 +839,7 @@ fn set_string(doc: &mut DocumentMut, section: &str, key: &str, new_value: &str) 
     let table = doc
         .entry(section)
         .or_insert_with(toml_edit::table)
-        .as_table_mut()
+        .as_table_like_mut()
         .ok_or_else(|| AppError::Other(format!("config.toml: [{section}] is not a table")))?;
 
     if let Some(item) = table.get_mut(key)
@@ -848,6 +877,12 @@ struct SettingsSnapshot {
     /// Every known provider's on/off switch (#244) — enabled ones and
     /// disabled ones, because turning a provider on is the point.
     vendors: Vec<VendorStatus>,
+    /// OpenCode Go billing-cycle reset day (1-28), when configured. The
+    /// monthly window follows the subscriber's billing date, so this lets
+    /// frontends compute an exact monthly window length instead of guessing
+    /// 30 days. `None` means not configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    monthly_cycle_day: Option<u8>,
 }
 
 #[derive(Debug, Serialize)]
@@ -891,6 +926,9 @@ struct ApplyRequest {
     keys: BTreeMap<String, KeyMutation>,
     #[serde(default)]
     vendors: BTreeMap<String, bool>,
+    /// OpenCode Go billing-cycle reset day (1-28). Absent = leave untouched.
+    #[serde(default)]
+    monthly_cycle_day: Option<u8>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -949,6 +987,7 @@ fn snapshot_from_config_with(
         primary_choices,
         keys,
         vendors,
+        monthly_cycle_day: cfg.opencode_go.monthly_cycle_day,
     }
 }
 
@@ -1043,6 +1082,17 @@ fn state_from_apply_request(cfg: &Config, raw: &str) -> Result<SettingsState> {
             dirty: true,
         };
     }
+
+    if let Some(day) = request.monthly_cycle_day {
+        if !(1..=28).contains(&day) {
+            return Err(AppError::Other(format!(
+                "[opencode-go] monthly_cycle_day must be between 1 and 28, got {day}"
+            )));
+        }
+        state.monthly_cycle_day = Some(day);
+        state.monthly_cycle_day_dirty = true;
+    }
+
     Ok(state)
 }
 
@@ -1840,6 +1890,8 @@ mod tests {
             notify_enabled: true,
             notify_enabled_dirty: false,
             notify_threshold: KeyInput::from_config(Some("97")),
+            monthly_cycle_day: None,
+            monthly_cycle_day_dirty: false,
             status: String::new(),
             scroll: 0,
             picker: None,
@@ -2514,6 +2566,47 @@ api_key_env = "OPENROUTER_WORK_API_KEY"
         assert_eq!(reloaded.zai.plan_tier.as_deref(), Some("pro"));
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(!raw.contains("remove-me"));
+        assert!(raw.contains("zai = {"));
+        assert!(raw.contains("# keep me"));
+    }
+
+    #[test]
+    fn save_updates_a_key_and_enables_a_toml_inline_table() {
+        let (_dir, path) = temp_config(Some(
+            "zai = { enabled = false, api_key = \"old-secret\", plan_tier = \"pro\" } # keep me\n\
+             [ui]\nprimary = \"anthropic\"\n",
+        ));
+        let cfg = Config::load_from(&path).unwrap();
+        let mut state = SettingsState::from_config_with(&cfg, |_| false);
+        let input = &mut state.keys[key_index(VendorId::Zai)];
+        input.buf = "new-secret".into();
+        input.dirty = true;
+
+        save_to_path(&state, &path).unwrap();
+
+        let reloaded = Config::load_from(&path).unwrap();
+        assert_eq!(reloaded.zai.api_key.as_deref(), Some("new-secret"));
+        assert!(reloaded.zai.enabled);
+        assert_eq!(reloaded.zai.plan_tier.as_deref(), Some("pro"));
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(!raw.contains("old-secret"));
+        assert!(raw.contains("new-secret"));
+        assert!(raw.contains("zai = {"));
+        assert!(raw.contains("# keep me"));
+    }
+
+    #[test]
+    fn enable_vendor_at_enables_a_toml_inline_table() {
+        let (_dir, path) = temp_config(Some(
+            "zai = { enabled = false, plan_tier = \"pro\" } # keep me\n\
+             [ui]\nprimary = \"anthropic\"\n",
+        ));
+        enable_vendor_at(&path, VendorId::Zai).unwrap();
+
+        let reloaded = Config::load_from(&path).unwrap();
+        assert!(reloaded.zai.enabled);
+        assert_eq!(reloaded.zai.plan_tier.as_deref(), Some("pro"));
+        let raw = std::fs::read_to_string(&path).unwrap();
         assert!(raw.contains("zai = {"));
         assert!(raw.contains("# keep me"));
     }
