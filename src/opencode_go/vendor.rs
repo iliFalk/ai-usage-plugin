@@ -231,25 +231,28 @@ fn build_placeholders_with_plan_and_tolerance(
         // Pace diff (percent points ahead/behind linear).
         (
             "ocg_rolling_pace_diff",
-            rolling_pace.pace_diff.map_or_else(|| "—".into(), |p| format!("{p:.0}")),
+            rolling_pace
+                .pace_diff
+                .map_or_else(|| "—".into(), |p| format!("{p:.0}")),
         ),
         (
             "ocg_weekly_pace_diff",
-            weekly_pace.pace_diff.map_or_else(|| "—".into(), |p| format!("{p:.0}")),
+            weekly_pace
+                .pace_diff
+                .map_or_else(|| "—".into(), |p| format!("{p:.0}")),
         ),
         (
             "ocg_monthly_pace_diff",
-            monthly_pace.pace_diff.map_or_else(|| "—".into(), |p| format!("{p:.0}")),
+            monthly_pace
+                .pace_diff
+                .map_or_else(|| "—".into(), |p| format!("{p:.0}")),
         ),
         // Pace diff text with color hint (used by tooltip).
         (
             "ocg_rolling_pace_text",
             rolling_pace.pace_diff_text.0.clone(),
         ),
-        (
-            "ocg_weekly_pace_text",
-            weekly_pace.pace_diff_text.0.clone(),
-        ),
+        ("ocg_weekly_pace_text", weekly_pace.pace_diff_text.0.clone()),
         (
             "ocg_monthly_pace_text",
             monthly_pace.pace_diff_text.0.clone(),
@@ -405,6 +408,7 @@ pub fn render(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_with_meta(
     snap: &Usage,
     stale: bool,
@@ -433,7 +437,9 @@ fn render_with_meta(
         .as_deref()
         .map(|format| substitute(format, &values))
         .unwrap_or_else(|| {
-            render_tooltip(snap, stale, last_error, cache_age, theme, opts, cfg, now, history)
+            render_tooltip(
+                snap, stale, last_error, cache_age, theme, opts, cfg, now, history,
+            )
         });
 
     WaybarOutput {
@@ -483,6 +489,7 @@ fn sparkline(points: &[f64], width: usize) -> String {
     out
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_tooltip(
     snap: &Usage,
     stale: bool,
@@ -506,8 +513,18 @@ fn render_tooltip(
         |w: &UsageWindow| WindowRow::paced(w, now, opts.pace_tolerance, opts.tooltip_pace_pts);
     let mut present = false;
     for (label, window, duration, kind) in [
-        ("  Rolling (5h)", snap.rolling.as_ref(), ROLLING_WINDOW, "rolling"),
-        ("  Weekly (7d)", snap.weekly.as_ref(), WEEKLY_WINDOW, "weekly"),
+        (
+            "  Rolling (5h)",
+            snap.rolling.as_ref(),
+            ROLLING_WINDOW,
+            "rolling",
+        ),
+        (
+            "  Weekly (7d)",
+            snap.weekly.as_ref(),
+            WEEKLY_WINDOW,
+            "weekly",
+        ),
     ] {
         let Some(window) = window else {
             continue;
@@ -517,11 +534,12 @@ fn render_tooltip(
         push_window_with_row(&mut lines, label, &projected, theme, now, row(&projected));
         // Dollar line + pace diff below each window row.
         let pct = window.percent;
-        let usd = pct as f64 / 100.0 * match kind {
-            "rolling" => cfg.rolling_limit,
-            "weekly" => cfg.weekly_limit,
-            _ => 0.0,
-        };
+        let usd = pct / 100.0
+            * match kind {
+                "rolling" => cfg.rolling_limit,
+                "weekly" => cfg.weekly_limit,
+                _ => 0.0,
+            };
         let limit = match kind {
             "rolling" => cfg.rolling_limit,
             "weekly" => cfg.weekly_limit,
@@ -531,29 +549,31 @@ fn render_tooltip(
         let pace = start_ms.map(|s| {
             let end_ms = window.resets_at.timestamp_millis();
             let now_ms = now.timestamp_millis();
-            pace_diff(pct as f64, s, end_ms, now_ms)
+            pace_diff(pct, s, end_ms, now_ms)
         });
         let (pace_text, pace_color) = match pace {
             Some(Some(p)) => {
                 let (text, color) = pace_diff_text(Some(p));
-                (text, match color {
-                    "red" => theme.red.clone(),
-                    "orange" => theme.orange.clone(),
-                    "green" => theme.green.clone(),
-                    _ => theme.dim.clone(),
-                })
+                (
+                    text,
+                    match color {
+                        "red" => theme.red.clone(),
+                        "orange" => theme.orange.clone(),
+                        "green" => theme.green.clone(),
+                        _ => theme.dim.clone(),
+                    },
+                )
             }
             _ => ("—".into(), theme.dim.clone()),
         };
         lines.push(TooltipLine::Body(format!(
             " <span foreground='{}'>    ${:.2} / ${:.2}</span>",
-            theme.fg,
-            usd,
-            limit
+            theme.fg, usd, limit
         )));
         lines.push(TooltipLine::Body(format!(
             " <span foreground='{}'>    pace: {}</span>",
-            pace_color, escape(&pace_text)
+            pace_color,
+            escape(&pace_text)
         )));
         // Sparkline: usage trend over the window.
         let hist = match kind {
@@ -586,9 +606,7 @@ fn render_tooltip(
         let usd = pct as f64 / 100.0 * cfg.monthly_limit;
         lines.push(TooltipLine::Body(format!(
             " <span foreground='{}'>    ${:.2} / ${:.2}</span>",
-            theme.fg,
-            usd,
-            cfg.monthly_limit
+            theme.fg, usd, cfg.monthly_limit
         )));
         let pace_start = window_start_ms("monthly", window.resets_at, cfg);
         let (pace_text, pace_color) = match pace_start {
@@ -611,7 +629,8 @@ fn render_tooltip(
         };
         lines.push(TooltipLine::Body(format!(
             " <span foreground='{}'>    pace: {}</span>",
-            pace_color, escape(&pace_text)
+            pace_color,
+            escape(&pace_text)
         )));
         // Sparkline: usage trend over the month.
         if !history.monthly.points.is_empty() {

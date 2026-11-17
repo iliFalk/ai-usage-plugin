@@ -14,7 +14,6 @@ use crate::antigravity;
 use crate::cache::{Cache, DEFAULT_TTL};
 use crate::config::Config;
 use crate::copilot;
-use crate::widget::cli::{Cli, Vendor};
 use crate::cursor;
 use crate::deepinfra;
 use crate::deepseek;
@@ -39,6 +38,7 @@ use crate::synthetic;
 use crate::theme::Theme;
 use crate::vendor::{HTTP_CLIENT_TIMEOUT, RenderOpts, VendorId, VendorOutcome};
 use crate::waybar::WaybarOutput;
+use crate::widget::cli::{Cli, Vendor};
 use crate::widget::pretty::print_pretty;
 use crate::widget::render::{DEFAULT_FORMAT, RenderInput, render_anthropic};
 use crate::zai;
@@ -284,7 +284,8 @@ async fn opencode_go_output(cli: &Cli, config: &Config) -> Result<WaybarOutput> 
     };
     let snapshot = outcome.snapshot.clone();
     let vendor_outcome: VendorOutcome = outcome.into();
-    let ocg_cfg = crate::opencode_go::vendor::OpenCodeGoRenderConfig::from_config(&config.opencode_go);
+    let ocg_cfg =
+        crate::opencode_go::vendor::OpenCodeGoRenderConfig::from_config(&config.opencode_go);
     Ok(crate::opencode_go::vendor::render(
         &vendor_outcome,
         &snapshot,

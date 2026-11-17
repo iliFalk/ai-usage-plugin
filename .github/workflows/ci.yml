@@ -35,10 +35,9 @@ jobs:
             echo "::error::Changelog validation requires a full-history checkout."
             exit 1
           fi
-          if [ -z "$(git tag --list 'v*')" ]; then
-            echo "::error::Changelog validation requires v* release tags."
-            exit 1
-          fi
+          # No v* tag in this repository yet: the script says so and exits 0.
+          # Do not gate on tags here — that turns an absent release history
+          # into a red build on every PR.
           make changelog-check
 
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
