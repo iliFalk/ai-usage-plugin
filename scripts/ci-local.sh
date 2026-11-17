@@ -70,7 +70,7 @@ step "linux mint tray model"           make mint-test
 if /usr/bin/python3 -c "import gi; gi.require_version('Gtk', '3.0')" 2>/dev/null; then
   step "linux mint GTK runtime" make mint-runtime-test
 else
-  miss "linux mint GTK runtime — PyGObject is not installed for /usr/bin/python3"
+  miss "linux mint GTK runtime — PyGObject or the Gtk 3 typelib is missing for /usr/bin/python3"
 fi
 
 if command -v cargo-machete >/dev/null 2>&1; then
