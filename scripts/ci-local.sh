@@ -47,6 +47,17 @@ step "format"                          cargo fmt --all -- --check
 step "clippy (-D warnings)"            cargo clippy --all-targets --locked -- -D warnings
 step "tests (all targets)"             cargo test --all-targets --locked
 step "release build"                   cargo build --release --locked
+
+# The declared minimum, which the msrv jobs check on three systems. A dependency bump can raise the
+# floor without touching a line of this crate, and that only shows up on an older rustc.
+msrv="$(sed -n 's/^rust-version *= *"\(.*\)"/\1/p' Cargo.toml | head -1)"
+if [ -n "$msrv" ] && rustup toolchain list 2>/dev/null | grep -q "^$msrv"; then
+  step "declared minimum rustc $msrv" cargo "+$msrv" check --all-targets --locked
+elif [ -n "$msrv" ]; then
+  miss "declared minimum rustc $msrv — not installed (rustup toolchain install $msrv)"
+else
+  miss "declared minimum rustc — Cargo.toml declares no rust-version"
+fi
 step "desktop models (node)"           make desktop-test
 step "popover SSR contract (vite)"     make popover-ssr-test
 step "omarchy plugin model"            make plugin-test
