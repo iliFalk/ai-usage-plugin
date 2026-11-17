@@ -605,7 +605,9 @@ pub async fn refresh_one(client: &Client, config: &Config, tab: &TabId) -> TabSt
                     TabSource::Custom { .. } => crate::balance::DisplayPrefs::default(),
                 },
                 monthly_cycle_day: match &tab.source {
-                    TabSource::Builtin(VendorId::OpenCodeGo) => config.opencode_go.monthly_cycle_day,
+                    TabSource::Builtin(VendorId::OpenCodeGo) => {
+                        config.opencode_go.monthly_cycle_day
+                    }
                     _ => None,
                 },
             }));

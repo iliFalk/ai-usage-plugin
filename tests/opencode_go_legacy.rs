@@ -4,8 +4,8 @@
 use std::time::Duration;
 
 use ai_usagebar::cache::Cache;
-use ai_usagebar::opencode_go::{creds, fetch, vendor};
 use ai_usagebar::opencode_go::vendor::OpenCodeGoRenderConfig;
+use ai_usagebar::opencode_go::{creds, fetch, vendor};
 use ai_usagebar::theme::Theme;
 use ai_usagebar::vendor::{RenderOpts, VendorOutcome};
 use serde_json::json;

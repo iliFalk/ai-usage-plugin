@@ -60,11 +60,7 @@ pub struct UsageHistory {
 impl UsageHistory {
     /// Append a fresh sample for each window, keeping at most MAX_HIST_POINTS.
     /// Resets the points when the window's `resetsAt` changes.
-    fn merge(
-        &mut self,
-        usage: &Usage,
-        now_ms: i64,
-    ) {
+    fn merge(&mut self, usage: &Usage, now_ms: i64) {
         let windows = [
             ("rolling", usage.rolling.as_ref()),
             ("weekly", usage.weekly.as_ref()),
@@ -95,23 +91,19 @@ impl UsageHistory {
 }
 
 /// Write a cache payload including both usage and history.
-fn write_cache_payload(
-    target: &str,
-    usage: &Usage,
-    history: &UsageHistory,
-) -> Result<Vec<u8>> {
+fn write_cache_payload(target: &str, usage: &Usage, history: &UsageHistory) -> Result<Vec<u8>> {
     let mut map = serde_json::Map::new();
     map.insert("target".into(), Value::String(target.into()));
     map.insert("response".into(), usage_repr(usage));
-    map.insert("hist".into(), serde_json::to_value(history).ok().unwrap_or_default());
+    map.insert(
+        "hist".into(),
+        serde_json::to_value(history).ok().unwrap_or_default(),
+    );
     Ok(serde_json::to_vec(&Value::Object(map))?)
 }
 
 /// Parse a cache payload, returning both usage and history.
-fn parse_cache_full(
-    body: &[u8],
-    target: &str,
-) -> Result<(Usage, Option<UsageHistory>)> {
+fn parse_cache_full(body: &[u8], target: &str) -> Result<(Usage, Option<UsageHistory>)> {
     let value: Value = serde_json::from_slice(body)
         .map_err(|_| AppError::Schema("OpenCode Go cache is invalid".into()))?;
     if value.get("target").and_then(Value::as_str) != Some(target) {
@@ -122,8 +114,11 @@ fn parse_cache_full(
     let response = value
         .get("response")
         .ok_or_else(|| AppError::Schema("OpenCode Go cache is missing its response".into()))?;
-    let usage = parse_usage(response).map_err(|_| AppError::Schema("OpenCode Go cache is invalid".into()))?;
-    let history = value.get("hist").and_then(|h| serde_json::from_value(h.clone()).ok());
+    let usage = parse_usage(response)
+        .map_err(|_| AppError::Schema("OpenCode Go cache is invalid".into()))?;
+    let history = value
+        .get("hist")
+        .and_then(|h| serde_json::from_value(h.clone()).ok());
     Ok((usage, history))
 }
 
