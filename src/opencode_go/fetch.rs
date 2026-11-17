@@ -1,6 +1,7 @@
 use std::fmt::Write as _;
 use std::time::Duration;
 
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::cache::{Cache, acquire_lock_async};
@@ -14,6 +15,8 @@ pub const BASE_URL: &str = "https://opencode.ai/zen/go/v1/usage";
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 const LOCK_TIMEOUT: Duration = Duration::from_secs(15);
 const SCHEMA_ERROR: &str = "OpenCode Go usage response schema mismatch";
+/// Maximum history points kept per window (last ~200 samples).
+const MAX_HIST_POINTS: usize = 200;
 
 #[derive(Debug, Clone)]
 pub struct Endpoints {
@@ -32,38 +35,132 @@ impl Default for Endpoints {
 /// specialised to its snapshot.
 pub type FetchOutcome = crate::outcome::Outcome<Usage>;
 
+/// One historical sample: timestamp (ms since epoch) and usage percent.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct HistoryPoint {
+    pub t: i64,
+    pub p: f64,
+}
+
+/// Historical samples for one window.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct HistoryWindow {
+    pub resets_at: Option<String>,
+    pub points: Vec<HistoryPoint>,
+}
+
+/// All history for all windows.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct UsageHistory {
+    pub rolling: HistoryWindow,
+    pub weekly: HistoryWindow,
+    pub monthly: HistoryWindow,
+}
+
+impl UsageHistory {
+    /// Append a fresh sample for each window, keeping at most MAX_HIST_POINTS.
+    /// Resets the points when the window's `resetsAt` changes.
+    fn merge(&mut self, usage: &Usage, now_ms: i64) {
+        let windows = [
+            ("rolling", usage.rolling.as_ref()),
+            ("weekly", usage.weekly.as_ref()),
+            ("monthly", usage.monthly.as_ref()),
+        ];
+        for (name, window) in windows {
+            let hist = match name {
+                "rolling" => &mut self.rolling,
+                "weekly" => &mut self.weekly,
+                _ => &mut self.monthly,
+            };
+            if let Some(w) = window {
+                let resets_at = Some(w.resets_at.to_rfc3339());
+                if hist.resets_at != resets_at {
+                    hist.resets_at = resets_at;
+                    hist.points.clear();
+                }
+                hist.points.push(HistoryPoint {
+                    t: now_ms,
+                    p: w.percent,
+                });
+                if hist.points.len() > MAX_HIST_POINTS {
+                    hist.points.drain(..hist.points.len() - MAX_HIST_POINTS);
+                }
+            }
+        }
+    }
+}
+
+/// Write a cache payload including both usage and history.
+fn write_cache_payload(target: &str, usage: &Usage, history: &UsageHistory) -> Result<Vec<u8>> {
+    let mut map = serde_json::Map::new();
+    map.insert("target".into(), Value::String(target.into()));
+    map.insert("response".into(), usage_repr(usage));
+    map.insert(
+        "hist".into(),
+        serde_json::to_value(history).ok().unwrap_or_default(),
+    );
+    Ok(serde_json::to_vec(&Value::Object(map))?)
+}
+
+/// Parse a cache payload, returning both usage and history.
+fn parse_cache_full(body: &[u8], target: &str) -> Result<(Usage, Option<UsageHistory>)> {
+    let value: Value = serde_json::from_slice(body)
+        .map_err(|_| AppError::Schema("OpenCode Go cache is invalid".into()))?;
+    if value.get("target").and_then(Value::as_str) != Some(target) {
+        return Err(AppError::Schema(
+            "OpenCode Go cache belongs to a different account".into(),
+        ));
+    }
+    let response = value
+        .get("response")
+        .ok_or_else(|| AppError::Schema("OpenCode Go cache is missing its response".into()))?;
+    let usage = parse_usage(response)
+        .map_err(|_| AppError::Schema("OpenCode Go cache is invalid".into()))?;
+    let history = value
+        .get("hist")
+        .and_then(|h| serde_json::from_value(h.clone()).ok());
+    Ok((usage, history))
+}
+
 pub async fn fetch_snapshot(
     client: &reqwest::Client,
     api_key: &str,
     cache: &Cache,
     endpoints: &Endpoints,
     ttl: Duration,
-) -> Result<FetchOutcome> {
+) -> Result<(FetchOutcome, UsageHistory)> {
     cache.ensure_dir()?;
     let _lock = acquire_lock_async(&cache.lock_path(), LOCK_TIMEOUT).await?;
     let target = target_key(endpoints, api_key);
+    let now_ms = chrono::Utc::now().timestamp_millis();
 
     if let Some(bytes) = cache.fresh_payload(ttl)?
-        && let Ok(snapshot) = parse_cache(&bytes, &target)
+        && let Ok((snapshot, history)) = parse_cache_full(&bytes, &target)
     {
-        return Ok(crate::outcome::Outcome::cached(snapshot, cache, false));
+        let history = history.unwrap_or_default();
+        return Ok((
+            crate::outcome::Outcome::cached(snapshot, cache, false),
+            history,
+        ));
     }
 
     match fetch_live(client, &endpoints.usage, api_key).await {
         Ok(snapshot) => {
-            let body = serde_json::to_vec(&serde_json::json!({
-                "target": target,
-                "response": usage_repr(&snapshot),
-            }))?;
+            let mut history = UsageHistory::default();
+            history.merge(&snapshot, now_ms);
+            let body = write_cache_payload(&target, &snapshot, &history)?;
             cache.write_payload(&body)?;
-            Ok(crate::outcome::Outcome::fresh(snapshot))
+            Ok((crate::outcome::Outcome::fresh(snapshot), history))
         }
-        Err(error @ AppError::Transport(_)) => fallback_or_error(cache, None, &target, error),
+        Err(error @ AppError::Transport(_)) => {
+            let outcome = fallback_or_error(cache, None, &target, error)?;
+            Ok((outcome, UsageHistory::default()))
+        }
         Err(AppError::Http { status, .. }) => {
             let message = status_message(status).to_string();
             cache.mark_stale();
             cache.write_last_error(status, &message);
-            fallback_or_error(
+            let outcome = fallback_or_error(
                 cache,
                 Some((status, message.clone())),
                 &target,
@@ -71,20 +168,25 @@ pub async fn fetch_snapshot(
                     status,
                     body: message,
                 },
-            )
+            )?;
+            Ok((outcome, UsageHistory::default()))
         }
         Err(AppError::Schema(_)) => {
             let message = SCHEMA_ERROR.to_string();
             cache.mark_stale();
             cache.write_last_error(0, &message);
-            fallback_or_error(
+            let outcome = fallback_or_error(
                 cache,
                 Some((0, message.clone())),
                 &target,
                 AppError::Schema(message),
-            )
+            )?;
+            Ok((outcome, UsageHistory::default()))
         }
-        Err(error) => fallback_or_error(cache, None, &target, error),
+        Err(error) => {
+            let outcome = fallback_or_error(cache, None, &target, error)?;
+            Ok((outcome, UsageHistory::default()))
+        }
     }
 }
 
@@ -224,7 +326,7 @@ mod tests {
             usage: format!("{}/zen/go/v1/usage", server.url()),
         };
 
-        let output = fetch_snapshot(
+        let (output, _history) = fetch_snapshot(
             &reqwest::Client::new(),
             "test-key",
             &cache,
@@ -367,7 +469,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let second_output = fetch_snapshot(
+        let (second_output, _history) = fetch_snapshot(
             &reqwest::Client::new(),
             "second-key",
             &cache,

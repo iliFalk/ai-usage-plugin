@@ -1719,7 +1719,7 @@ fn monthly_window_secs(resets_at: DateTime<Utc>, cycle_day: u8) -> Option<chrono
     // previous month's last day and handles the December/January rollover.
     let prev_month_last = chrono::NaiveDate::from_ymd_opt(end.year(), end.month(), 1)?
         .checked_sub_days(chrono::Days::new(1))?;
-    let days_in_prev_month = prev_month_last.day() as u32;
+    let days_in_prev_month = prev_month_last.day();
     let start_day = cycle_day.min(days_in_prev_month as u8);
     let start = chrono::NaiveDate::from_ymd_opt(prev_year, prev_month, start_day.into())?;
     let seconds = end.signed_duration_since(start).num_seconds();

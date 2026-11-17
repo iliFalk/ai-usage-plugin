@@ -605,7 +605,9 @@ pub async fn refresh_one(client: &Client, config: &Config, tab: &TabId) -> TabSt
                     TabSource::Custom { .. } => crate::balance::DisplayPrefs::default(),
                 },
                 monthly_cycle_day: match &tab.source {
-                    TabSource::Builtin(VendorId::OpenCodeGo) => config.opencode_go.monthly_cycle_day,
+                    TabSource::Builtin(VendorId::OpenCodeGo) => {
+                        config.opencode_go.monthly_cycle_day
+                    }
                     _ => None,
                 },
             }));
@@ -1034,7 +1036,7 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
             )?;
             let cache = crate::cache::Cache::for_vendor("opencode-go")?;
             let endpoints = crate::opencode_go::fetch::Endpoints::default();
-            let outcome = crate::opencode_go::fetch::fetch_snapshot(
+            let (outcome, _history) = crate::opencode_go::fetch::fetch_snapshot(
                 client,
                 &api_key,
                 &cache,
