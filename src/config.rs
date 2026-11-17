@@ -1194,6 +1194,19 @@ pub struct OpenCodeGoConfig {
     /// (`$XDG_DATA_HOME/opencode` or `~/.local/share/opencode`), for a
     /// non-standard install. The key is read read-only, never copied.
     pub auth_paths: Option<Vec<PathBuf>>,
+    /// Unix timestamp (ms) of the monthly cycle start, set by
+    /// `ai-usagebar opencode-go month-start`. When set, the monthly window
+    /// paces from this date instead of a guessed subscriber-dependent bound.
+    pub month_start_ms: Option<i64>,
+    /// Fallback: number of calendar days back from the monthly reset to use
+    /// as the month start when `month_start_ms` is unset.
+    pub month_days: Option<u32>,
+    /// Dollar limit for the rolling 5-hour window. Default 15.
+    pub rolling_limit: Option<f64>,
+    /// Dollar limit for the weekly window. Default 40.
+    pub weekly_limit: Option<f64>,
+    /// Dollar limit for the monthly window. Default 80.
+    pub monthly_limit: Option<f64>,
 }
 
 /// Cline reads the OAuth credential the Cline CLI maintains in
@@ -1401,6 +1414,11 @@ impl Default for OpenCodeGoConfig {
             api_key: None,
             monthly_cycle_day: None,
             auth_paths: None,
+            month_start_ms: None,
+            month_days: None,
+            rolling_limit: Some(15.0),
+            weekly_limit: Some(40.0),
+            monthly_limit: Some(80.0),
         }
     }
 }
