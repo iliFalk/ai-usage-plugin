@@ -159,6 +159,12 @@ smoke:
 	@echo "Running live API smoke tests (requires creds in shell env)..."
 	cargo test --test live -- --ignored --nocapture
 
+# Every gate CI proves on a Linux machine, in one run. The macOS and Windows jobs need those
+# operating systems; the script names what it cannot cover instead of pretending. Cheaper than the
+# Actions matrix, which bills a full run at roughly 230 quota minutes.
+ci-local:
+	./scripts/ci-local.sh
+
 clippy:
 	cargo clippy --all-targets -- -D warnings
 
