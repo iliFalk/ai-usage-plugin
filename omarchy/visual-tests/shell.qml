@@ -50,6 +50,17 @@ ShellRoot {
       settings.urgent = "#f38ba8"
       settings.openSection = "display"
       viewport.contentY = 0
+    } else if (scenario === 2) {
+      // Quota-threshold notifications ([notifications]): the section is only
+      // drawn when the snapshot carried the values, so the scenario supplies
+      // them the same way it supplies the rest of the fake settings.
+      applyTheme("#cdd6f4", "#1e1e2e", "#89b4fa", "#f38ba8", "#6c7086")
+      scenarioBackground = "#1e1e2e"
+      settings.foreground = "#cdd6f4"
+      settings.urgent = "#f38ba8"
+      settings.notifySettings = ({ enabled: true, threshold: 97 })
+      settings.openSection = "notifications"
+      viewport.contentY = 0
     } else {
       applyTheme("#1f2328", "#f6f8fa", "#0969da", "#cf222e", "#656d76")
       scenarioBackground = "#f6f8fa"
@@ -66,7 +77,9 @@ ShellRoot {
   function capture() {
     var name = scenario === 0
       ? "settings-display-dark.png"
-      : "settings-credentials-light.png"
+      : scenario === 2
+        ? "settings-notifications-dark.png"
+        : "settings-credentials-light.png"
     window.contentItem.grabToImage(function(result) {
       if (!result.saveToFile(outputDir + "/" + name)) {
         console.error("VISUAL SCENARIO FAIL: could not write " + name)
@@ -75,7 +88,7 @@ ShellRoot {
       }
       console.log("VISUAL SCENARIO OK: " + name)
       scenario++
-      if (scenario < 2) prepareScenario()
+      if (scenario < 3) prepareScenario()
       else Qt.quit()
     }, Qt.size(window.width, window.height))
   }
@@ -141,6 +154,7 @@ ShellRoot {
               configured: false, inline_configured: false, environment_configured: false }
           ]
         })
+        notifySettings: ({ enabled: true, threshold: 97 })
       }
     }
   }
