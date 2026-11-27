@@ -29,7 +29,6 @@ pub mod pacing;
 pub mod provider;
 pub mod report;
 pub mod sections;
-pub mod serde_helpers;
 pub mod settings;
 pub mod usage;
 pub mod vendor;

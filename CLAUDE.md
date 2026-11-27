@@ -194,7 +194,7 @@ force-move a tag once it is pushed — cut a new patch version instead.
 - `src/opencode_go/`, `src/openrouter/`, `src/deepseek/` — one provider each:
   credential resolution, wire types + parse, cache-aware fetch.
 - `src/{balance,cache,config,countdown,display,error,format,notify,outcome,
-  pacing,usage,vendor,serde_helpers}.rs` — shared primitives.
+  pacing,usage,vendor}.rs` — shared primitives.
 - `src/guard.rs` — structural guards (changelog immutability, AUR checksum
   parity) plus the walking source scanner `cache`/`outcome` guards build on.
 - `manifest.json`, `omarchy/` — the Quattro plugin: manifest, bar widget, popup,

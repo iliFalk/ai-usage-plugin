@@ -59,8 +59,7 @@ Inside, by concern:
 - **Notifications** — `notify`: the pure threshold decision, the persisted
   re-arm state and the `notify-send` sink.
 - **Shared primitives** — `config`, `cache`, `outcome`, `error`, `balance`,
-  `format`, `display`, `countdown`, `pacing`, `vendor`, `usage`,
-  `serde_helpers`.
+  `format`, `display`, `countdown`, `pacing`, `vendor`, `usage`.
 
 Forbidden reaches:
 
