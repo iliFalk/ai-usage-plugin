@@ -2,13 +2,12 @@
 #
 # Everything CI proves on a Linux machine, in one command.
 #
-# Why this exists: the GitHub Actions matrix bills by operating system, and one full run of
-# `.github/workflows/ci.yml` costs about 230 quota minutes — half of it the aarch64-darwin nix leg at
-# the macOS rate. The gates themselves are cheap; running them on GitHub every time is not.
+# Why this exists: the GitHub Actions matrix bills by operating system, and a full run of
+# `.github/workflows/ci.yml` costs quota minutes. The gates themselves are cheap; running them on
+# GitHub every time is not.
 #
-# What this script cannot cover, and says so instead of pretending: the macOS job (Keychain, WKWebView
-# tray, the Swift menu bar), the Windows job (the process and TCP-table walk, the tray exe guard), and
-# the aarch64 nix legs. Those need their own operating system. Everything else runs here.
+# What this script cannot cover, and says so instead of pretending: the aarch64 nix leg. It needs its
+# own runner. Everything else runs here.
 #
 #   ./scripts/ci-local.sh              # the whole gate
 #   CI_LOCAL_SKIP_NIX=1 ./scripts/ci-local.sh   # skip the nix leg (it is the slow one)
@@ -28,8 +27,6 @@ nix_system() {
   case "$(uname -s)-$(uname -m)" in
     Linux-x86_64)              echo "x86_64-linux" ;;
     Linux-aarch64|Linux-arm64) echo "aarch64-linux" ;;
-    Darwin-arm64)              echo "aarch64-darwin" ;;
-    Darwin-x86_64)             echo "x86_64-darwin" ;;
     *)                         echo "unknown" ;;
   esac
 }
@@ -58,20 +55,7 @@ elif [ -n "$msrv" ]; then
 else
   miss "declared minimum rustc — Cargo.toml declares no rust-version"
 fi
-step "desktop models (node)"           make desktop-test
-step "popover SSR contract (vite)"     make popover-ssr-test
 step "omarchy plugin model"            make plugin-test
-step "linux mint tray model"           make mint-test
-
-# The runtime test drives GTK through PyGObject. CI installs it with apt; here it is either present
-# or the step is named as a gap.
-# `import gi` alone is not enough: the module can be installed while the Gtk 3 typelib is not, and the
-# test then fails on `gi.require_version('Gtk', '3.0')` instead of being reported as a gap.
-if /usr/bin/python3 -c "import gi; gi.require_version('Gtk', '3.0')" 2>/dev/null; then
-  step "linux mint GTK runtime" make mint-runtime-test
-else
-  miss "linux mint GTK runtime — PyGObject or the Gtk 3 typelib is missing for /usr/bin/python3"
-fi
 
 if command -v cargo-machete >/dev/null 2>&1; then
   step "unused dependencies" cargo machete
@@ -120,5 +104,5 @@ fi
 if [ "$skip" -ne 0 ]; then
   echo "   green for what ran here; the skipped steps are named above"
 fi
-echo "   not covered by this script at all: test (macos-latest), test (windows-latest), nix aarch64 legs"
+echo "   not covered by this script at all: the nix aarch64 leg"
 exit 0

@@ -34,7 +34,7 @@ impl Default for Endpoints {
 /// specialised to its snapshot.
 pub type FetchOutcome = crate::outcome::Outcome<OpenRouterSnapshot>;
 
-/// Cache-aware fetch. Mirrors `anthropic::fetch::fetch_snapshot` semantics:
+/// Cache-aware fetch. Follows the shared `outcome::fallback` semantics:
 /// fresh cache short-circuits; on failure, fall back to cache + mark stale.
 /// `management_key` is the optional OpenRouter management key: only
 /// `/activity` uses it, and when it is `None` that request is skipped
@@ -642,8 +642,8 @@ mod tests {
             .with_status(200)
             .with_body(
                 r#"{"data":[
-                {"date":"2026-10-02","model":"openai/gpt-5-codex","usage":1.25,"requests":42},
-                {"date":"2026-10-01","model":"anthropic/claude-sonnet-4.5","usage":0.5,"requests":7}
+                {"date":"2026-10-02","model":"vendor-a/model-1","usage":1.25,"requests":42},
+                {"date":"2026-10-01","model":"vendor-b/model-2","usage":0.5,"requests":7}
                 ]}"#,
             )
             .expect(1)
@@ -664,8 +664,8 @@ mod tests {
         assert_eq!(
             out.snapshot.recent_models,
             vec![
-                "gpt-5-codex ($1.25 · 42 reqs)".to_string(),
-                "claude-sonnet-4.5 ($0.50 · 7 reqs)".to_string(),
+                "model-1 ($1.25 · 42 reqs)".to_string(),
+                "model-2 ($0.50 · 7 reqs)".to_string(),
             ]
         );
         activity.assert_async().await;

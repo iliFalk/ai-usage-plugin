@@ -3,7 +3,6 @@
 pub mod creds;
 pub mod fetch;
 pub mod types;
-pub mod vendor;
 
 #[cfg(test)]
 mod tests {
@@ -13,9 +12,8 @@ mod tests {
 
     #[test]
     fn official_usage_fixture_uses_percent_not_usage_percent() {
-        let value: Value =
-            serde_json::from_str(include_str!("../../tests/fixtures/opencode-go/usage.json"))
-                .expect("fixture JSON must be valid");
+        let value: Value = serde_json::from_str(include_str!("fixtures/usage.json"))
+            .expect("fixture JSON must be valid");
         let parsed = parse_usage(&value).expect("official usage fixture must parse");
         let rolling = parsed.rolling.expect("rolling");
         assert_eq!(rolling.status, "ok");

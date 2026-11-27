@@ -4,7 +4,7 @@
 //! present but blank. An empty access token is not a credential — it produces
 //! a request that gets a 401 the user cannot act on — so where a hard parse
 //! error is the right signal (the OAuth *refresh responses* and the
-//! kiro/kimi credential files use this) the blank is rejected at parse time.
+//! a provider's credential file uses this) the blank is rejected at parse time.
 //! Readers whose blank shapes are legitimate (#11's trusted-device flow keeps
 //! a live access token with an empty refresh token, and the Claude Keychain
 //! fallback distinguishes "signed out" from "corrupt") reject blanks in their

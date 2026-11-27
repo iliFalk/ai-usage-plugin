@@ -1,5 +1,5 @@
 pkgbase = ai-usagebar
-	pkgdesc = Omarchy/Waybar widgets + TUI for tracking multi-provider AI plan usage
+	pkgdesc = Data source for the Omarchy AI Usage panel: quota and balance for OpenCode Go, DeepSeek and OpenRouter
 	pkgver = 1.45.0
 	pkgrel = 1
 	url = https://github.com/akitaonrails/ai-usagebar
@@ -10,8 +10,7 @@ pkgbase = ai-usagebar
 	makedepends = git
 	makedepends = nasm
 	depends = gcc-libs
-	optdepends = waybar: status bar that hosts the widget
-	optdepends = libnotify: desktop notifications on hard auth failures
+	optdepends = libnotify: quota-threshold desktop notifications
 	conflicts = ai-usagebar-bin
 	options = !lto
 	options = !debug

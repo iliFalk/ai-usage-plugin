@@ -3,8 +3,7 @@
 //! After a *fresh* fetch (never a cached, stale, or failed one — see
 //! [`crate::outcome::Outcome::off_the_wire`]), the metric rows a refresh
 //! produced are checked against a configurable threshold. A window that
-//! crosses the threshold raises one notification per crossing, and a banked
-//! reset credit that expires soon raises one per credit.
+//! crosses the threshold raises one notification per crossing.
 //!
 //! Layout:
 //! - [`decide`] is the pure decision function: rows + threshold + previous
@@ -13,8 +12,8 @@
 //! - [`NotifyState`] is the persisted dedupe map
 //!   (`~/.cache/ai-usagebar/notifications.json`), written atomically under
 //!   the same flock discipline as the vendor caches.
-//! - [`NotifySink`] delivers through `notify-send` on Linux and Notification
-//!   Center on macOS, without changing the decision or persisted state.
+//! - [`NotifySink`] delivers through `notify-send`, without changing the
+//!   decision or persisted state.
 //!
 //! Everything here is best-effort: a missing notifier, an unwritable state
 //! file, or a contended lock is a silent skip — a missed notification beats
@@ -28,7 +27,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use chrono::{DateTime, SecondsFormat, Utc};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::countdown;
@@ -42,25 +41,22 @@ const HYSTERESIS_PCT: i32 = 7;
 
 /// How much later a reported reset instant has to be before it counts as a new
 /// window. Vendors report that instant with sub-second precision that jitters
-/// between fetches — Anthropic's five-hour window came back 0.7s apart on two
+/// between fetches — a five-hour window came back 0.7s apart on two
 /// fetches four minutes apart — and a rolling window slides its reset forward
 /// with the refresh interval, so a strict comparison re-armed the key and
 /// re-notified on refresh with nothing changed. Ninety minutes clears every
 /// refresh interval this ships with (the bar's default is five minutes and its
-/// maximum an hour; the tray refreshes every ten at most) and stays far below
+/// maximum an hour; the panel refreshes every five minutes at most) and stays far below
 /// the shortest window, so a real new window still moves the instant by more
 /// than this.
 const RESET_MOVE_TOLERANCE_SECS: i64 = 90 * 60;
-
-/// How long before a banked reset credit's expiry the warning fires.
-const CREDIT_WARNING_SECS: i64 = 48 * 3600;
 
 /// How long to wait for the state lock before skipping the whole check.
 /// Deliberately short: notifications are never worth stalling a refresh for.
 const LOCK_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// A notifier that hangs must not hang the bar with it.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(target_os = "linux")]
 const SPAWN_KILL_AFTER: Duration = Duration::from_secs(5);
 
 /// Timeout a critical toast asks `notify-send` for, in milliseconds.
@@ -114,26 +110,16 @@ pub struct MetricRow {
     pub reset_at: Option<DateTime<Utc>>,
 }
 
-/// One banked reset credit with a known expiry (Codex/SuperGrok
-/// `reset_credits.credits[]`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CreditExpiry {
-    pub title: Option<String>,
-    pub expires_at: DateTime<Utc>,
-}
-
 /// The notification-relevant projection of one vendor entry's refresh.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RefreshInput {
     /// The report entry id (`vendor` or `vendor@account`) — the entry half of
     /// the dedupe key.
     pub entry_id: String,
-    /// Canonical vendor display name (`VendorId::display_name`, or the
-    /// configured name of a `[[custom]]` provider).
+    /// Canonical provider display name (`VendorId::display_name`).
     pub vendor: String,
     pub account: Option<String>,
     pub rows: Vec<MetricRow>,
-    pub credits: Vec<CreditExpiry>,
 }
 
 /// Decide which notifications one refresh raises.
@@ -146,15 +132,12 @@ pub struct RefreshInput {
 /// - A key re-arms when usage drops below `threshold - 7`, or when the
 ///   window's `reset_at` moves to a later instant (a new window). The same
 ///   crossing therefore never fires twice.
-/// - A credit expiring within 48h (and not yet expired) fires once per
-///   expiry instant, at [`Urgency::Normal`].
 pub fn decide(
     input: &RefreshInput,
     threshold: u8,
     state: &mut NotifyState,
     now: DateTime<Utc>,
 ) -> Vec<Notification> {
-    migrate_anthropic_api_spend_key(input, state);
     let mut fired = Vec::new();
     let threshold = threshold as i32;
     let rearm_below = threshold - HYSTERESIS_PCT;
@@ -182,72 +165,7 @@ pub fn decide(
             state.entries.remove(&key);
         }
     }
-    for credit in &input.credits {
-        let remaining = credit.expires_at.signed_duration_since(now).num_seconds();
-        if remaining <= 0 || remaining > CREDIT_WARNING_SECS {
-            continue;
-        }
-        let key = format!(
-            "{}::credit::{}",
-            input.entry_id,
-            credit
-                .expires_at
-                .to_rfc3339_opts(SecondsFormat::AutoSi, true)
-        );
-        if state.entries.contains_key(&key) {
-            continue;
-        }
-        fired.push(credit_notification(input, credit, now));
-        state.entries.insert(
-            key,
-            KeyRecord {
-                notified_at: now,
-                reset_at_snapshot: None,
-            },
-        );
-    }
     fired
-}
-
-/// Version 1.41.0 used the last covered day as Anthropic API's spend-window
-/// identity. Collapse those daily keys into the stable row before deciding so
-/// an upgrade neither repeats a notification nor leaves unbounded stale state.
-fn migrate_anthropic_api_spend_key(input: &RefreshInput, state: &mut NotifyState) {
-    if input.entry_id != "anthropic_api" && !input.entry_id.starts_with("anthropic_api@") {
-        return;
-    }
-    let prefix = format!("{}::", input.entry_id);
-    let stable = format!("{prefix}Spend (mo)");
-    let legacy: Vec<String> = state
-        .entries
-        .keys()
-        .filter(|key| {
-            let Some(label) = key.strip_prefix(&prefix) else {
-                return false;
-            };
-            label == "Completed daily buckets this month"
-                || (label.starts_with("Month to date (through ") && label.ends_with(')'))
-        })
-        .cloned()
-        .collect();
-    if legacy.is_empty() {
-        return;
-    }
-    // An already-stable record is authoritative. Otherwise keep the newest
-    // daily record, since it represents the most recent delivered crossing.
-    let mut chosen = state.entries.get(&stable).cloned();
-    if chosen.is_none() {
-        chosen = legacy
-            .iter()
-            .filter_map(|key| state.entries.get(key).cloned())
-            .max_by_key(|record| record.notified_at);
-    }
-    for key in legacy {
-        state.entries.remove(&key);
-    }
-    if let Some(record) = chosen {
-        state.entries.insert(stable, record);
-    }
 }
 
 /// `true` when `current` is a later reset than `snapshot` — a `None → Some`
@@ -291,37 +209,6 @@ fn threshold_notification(
             Urgency::Normal
         },
         key: format!("{}::{}", input.entry_id, row.window),
-    }
-}
-
-fn credit_notification(
-    input: &RefreshInput,
-    credit: &CreditExpiry,
-    now: DateTime<Utc>,
-) -> Notification {
-    let label = credit.title.as_deref().unwrap_or("Reset credit");
-    let title = sanitize_untrusted_line(&format!(
-        "{} — reset credit expires {}",
-        input.vendor,
-        format::local_date_hm(credit.expires_at)
-    ));
-    let body = sanitize_untrusted_line(&format!(
-        "{} — redeem within {} ({})",
-        label,
-        countdown::format(Some(credit.expires_at), now),
-        format::local_time_hm(credit.expires_at)
-    ));
-    Notification {
-        title,
-        body,
-        urgency: Urgency::Normal,
-        key: format!(
-            "{}::credit::{}",
-            input.entry_id,
-            credit
-                .expires_at
-                .to_rfc3339_opts(SecondsFormat::AutoSi, true)
-        ),
     }
 }
 
@@ -388,11 +275,11 @@ pub trait NotifySink {
 }
 
 /// The do-nothing sink for platforms without a desktop delivery backend.
-#[cfg(any(not(any(target_os = "linux", target_os = "macos")), test))]
+#[cfg(any(not(target_os = "linux"), test))]
 #[derive(Debug, Default)]
 pub struct NoopSink;
 
-#[cfg(any(not(any(target_os = "linux", target_os = "macos")), test))]
+#[cfg(any(not(target_os = "linux"), test))]
 impl NotifySink for NoopSink {
     fn deliver(&mut self, _notification: &Notification) {}
 }
@@ -470,7 +357,7 @@ impl NotifySink for NotifySendSink {
 
 /// Wait for the notifier, killing it at the cap. Desktop delivery normally
 /// returns in milliseconds; the cap only matters when the service is wedged.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(target_os = "linux")]
 fn reap(mut child: std::process::Child) {
     let deadline = std::time::Instant::now() + SPAWN_KILL_AFTER;
     loop {
@@ -491,35 +378,8 @@ fn reap(mut child: std::process::Child) {
 fn production_sink() -> Box<dyn NotifySink + Send> {
     #[cfg(target_os = "linux")]
     return Box::new(NotifySendSink::new());
-    #[cfg(target_os = "macos")]
-    return Box::new(MacNotificationSink);
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(not(target_os = "linux"))]
     return Box::new(NoopSink);
-}
-
-/// AppleScript's Standard Additions sends a native Notification Center banner.
-/// Passing title and body as argv keeps provider text out of the script source.
-#[cfg(target_os = "macos")]
-struct MacNotificationSink;
-
-#[cfg(target_os = "macos")]
-impl NotifySink for MacNotificationSink {
-    fn deliver(&mut self, notification: &Notification) {
-        const SCRIPT: &str = "on run argv\n display notification (item 2 of argv) with title (item 1 of argv)\nend run";
-        let spawned = std::process::Command::new("/usr/bin/osascript")
-            .arg("-e")
-            .arg(SCRIPT)
-            .arg("--")
-            .arg(&notification.title)
-            .arg(&notification.body)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
-        if let Ok(child) = spawned {
-            reap(child);
-        }
-    }
 }
 
 // ─── Orchestration ─────────────────────────────────────────────────────────
@@ -530,7 +390,7 @@ pub async fn run(input: RefreshInput, threshold: u8) {
     let Some(state_path) = default_state_path() else {
         return;
     };
-    // The lock wait and the bounded notifier spawn are blocking; the TUI runs
+    // The lock wait and the bounded notifier spawn are blocking; the binary runs
     // a current-thread runtime, so neither belongs on the reactor thread.
     let joined = tokio::task::spawn_blocking(move || {
         let mut sink = production_sink();
@@ -589,84 +449,51 @@ pub fn run_at(
 // ─── Shared-assembly projection ────────────────────────────────────────────
 
 impl RefreshInput {
-    /// Project one tab's completed state into the notification input. Rows
-    /// come from the same panel projection every frontend reads; grouped
-    /// sub-rows (SuperGrok's product slices) are skipped — they share the
-    /// overall pool's window, and one notification per pool is the point.
-    /// Banked credits ride along only when the vendor reports them and the
-    /// report would surface them (`available > 0`).
+    /// Project one entry's completed state into the notification input. Rows
+    /// come from the same projection the report reads, so a notification names
+    /// exactly the window the panel shows.
     pub(crate) fn from_tab(
-        tab: &crate::tui::app::TabId,
-        state: &crate::tui::app::TabState,
+        tab: &crate::provider::TabId,
+        state: &crate::provider::TabState,
         now: DateTime<Utc>,
     ) -> Option<Self> {
-        use crate::tui::app::{TabSource, TabState};
-        use crate::tui::panels::sections_with_metadata_for;
+        use crate::provider::TabState;
+        use crate::sections::project;
 
-        let TabState::Ready(ready) = state else {
+        let TabState::Ready(_) = state else {
             return None;
         };
-        let (vendor, entry_id) = match &tab.source {
-            TabSource::Builtin(vendor) => (
-                vendor.display_name().to_string(),
-                crate::report::tab_id(tab),
-            ),
-            TabSource::Custom { name, .. } => (name.clone(), crate::report::tab_id(tab)),
-        };
+        let vendor = tab.vendor.display_name().to_string();
+        let entry_id = crate::report::tab_id(tab);
         // The tolerance only shapes pacing footnotes, which the notification
         // body never reads; any value behaves identically here.
-        let rows = metric_rows(sections_with_metadata_for(state, now, 0));
-        let credits = ready
-            .snapshot
-            .reset_credits()
-            .filter(|credits| credits.available > 0)
-            .map(|credits| {
-                credits
-                    .credits
-                    .iter()
-                    .filter_map(|credit| {
-                        credit.expires_at.map(|expires_at| CreditExpiry {
-                            title: credit.title.clone(),
-                            expires_at,
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        let rows = metric_rows(project(state, now, 0));
         Some(Self {
             entry_id,
             vendor,
             account: tab.account.clone(),
             rows,
-            credits,
         })
     }
 }
 
 /// The metric rows one refresh checks, each named by the window it measures.
 ///
-/// Grouped sub-rows are skipped (see [`RefreshInput::from_tab`]). A label is
-/// normally unique within an entry, but Antigravity and MiniMax lay a
-/// `Session` and a `Weekly` heading over the same pool labels, so "Gemini"
-/// named two windows. Sharing one dedupe key, the row under the re-arm band
-/// cleared the record its namesake over the threshold had just written, and
-/// the same notification fired again on every refresh. Metrics under a heading
-/// always include it in their name ("Weekly · Gemini"), even if no other row
-/// currently has the same label: a missing sibling must not change a window's
-/// identity. Metrics without a heading keep their bare names.
+/// A plain-text row with no value is a heading: the metrics below it take its
+/// name into their own ("Weekly · Gemini") until any other row except a
+/// spacer. A dedupe key built from a bare label would let a heading's row and
+/// a namesake under it clear each other's record, and the same notification
+/// would fire again on every refresh.
 fn metric_rows(
-    sections: impl IntoIterator<Item = crate::tui::panels::SectionProjection>,
+    sections: impl IntoIterator<Item = crate::sections::SectionProjection>,
 ) -> Vec<MetricRow> {
-    use crate::tui::panels::Section;
+    use crate::sections::Section;
 
     // A heading is a text row with no value; it covers the metrics below it
     // until any other row except a spacer.
     let mut heading: Option<String> = None;
     let mut rows = Vec::new();
     for projected in sections {
-        if projected.group.is_some() {
-            continue;
-        }
         match projected.section {
             Section::Text { label, value } if value.is_empty() => heading = Some(label),
             Section::Metric { label, pct, .. } => {
@@ -707,11 +534,10 @@ mod tests {
 
     fn input(rows: Vec<MetricRow>) -> RefreshInput {
         RefreshInput {
-            entry_id: "anthropic@gmail".into(),
-            vendor: "Claude".into(),
-            account: Some("gmail".into()),
+            entry_id: "openrouter@work".into(),
+            vendor: "OpenRouter".into(),
+            account: Some("work".into()),
             rows,
-            credits: Vec::new(),
         }
     }
 
@@ -746,8 +572,8 @@ mod tests {
         );
         assert_eq!(fired.len(), 1);
         assert_eq!(fired[0].urgency, Urgency::Normal);
-        assert_eq!(fired[0].key, "anthropic@gmail::Session (5h)");
-        assert_eq!(fired[0].title, "Claude · gmail — Session (5h) at 97%");
+        assert_eq!(fired[0].key, "openrouter@work::Session (5h)");
+        assert_eq!(fired[0].title, "OpenRouter · work — Session (5h) at 97%");
         // Sep 23 12:00 → Sep 24 12:00 is exactly one day: "1d 0h", with the
         // reset's local clock time beside it (rendered by the shared helper,
         // so the assertion holds on any machine timezone).
@@ -784,7 +610,7 @@ mod tests {
         );
         assert_eq!(fired.len(), 1);
         assert_eq!(fired[0].urgency, Urgency::Critical);
-        assert_eq!(fired[0].title, "Claude · gmail — Weekly (7d) at 100%");
+        assert_eq!(fired[0].title, "OpenRouter · work — Weekly (7d) at 100%");
     }
 
     #[test]
@@ -812,17 +638,17 @@ mod tests {
         assert_eq!(fires_at(96, &mut state), 0, "hovering does not re-fire");
         // 90 == threshold - 7: still inside the band, still armed-out.
         assert_eq!(fires_at(90, &mut state), 0);
-        assert!(state.is_notified("anthropic@gmail::Weekly (7d)"));
+        assert!(state.is_notified("openrouter@work::Weekly (7d)"));
         // Below the band: the mark is dropped…
         assert_eq!(fires_at(89, &mut state), 0);
-        assert!(!state.is_notified("anthropic@gmail::Weekly (7d)"));
+        assert!(!state.is_notified("openrouter@work::Weekly (7d)"));
         // …so the next crossing is a new crossing.
         assert_eq!(fires_at(97, &mut state), 1, "re-armed crossing fires");
     }
 
     #[test]
     fn a_jittered_reset_instant_is_the_same_window() {
-        // Observed live on Anthropic's five-hour window: two fetches four
+        // Observed live on a five-hour window: two fetches four
         // minutes apart reported the same window's reset 0.70s apart, and the
         // strict comparison re-armed the key and re-notified on refresh with
         // nothing changed.
@@ -908,10 +734,10 @@ mod tests {
         let mut state = NotifyState::default();
         let mut plain = input(vec![row("Weekly (7d)", 97, None)]);
         plain.entry_id = "zai".into();
-        plain.vendor = "Z.AI".into();
+        plain.vendor = "OpenRouter".into();
         plain.account = None;
         let fired = decide(&plain, 97, &mut state, at(23, 12, 0));
-        assert_eq!(fired[0].title, "Z.AI — Weekly (7d) at 97%");
+        assert_eq!(fired[0].title, "OpenRouter — Weekly (7d) at 97%");
     }
 
     #[test]
@@ -929,91 +755,6 @@ mod tests {
         assert!(!fired[0].body.contains('\u{1B}'), "{}", fired[0].body);
     }
 
-    // — Decision: banked credits ————————————————————
-
-    #[test]
-    fn banked_credit_fires_only_inside_the_48h_window() {
-        let now = at(23, 12, 0);
-        for (offset_secs, expected) in [(47 * 3600, 1), (48 * 3600, 1), (48 * 3600 + 1, 0), (-1, 0)]
-        {
-            let mut state = NotifyState::default();
-            let case = RefreshInput {
-                credits: vec![CreditExpiry {
-                    title: Some("Full reset".into()),
-                    expires_at: now + chrono::Duration::seconds(offset_secs),
-                }],
-                ..input(Vec::new())
-            };
-            let fired = decide(&case, 97, &mut state, now);
-            assert_eq!(fired.len(), expected, "offset {offset_secs}s");
-        }
-    }
-
-    #[test]
-    fn banked_credit_title_and_body_name_the_expiry() {
-        let now = at(23, 12, 0);
-        let mut state = NotifyState::default();
-        let case = RefreshInput {
-            credits: vec![CreditExpiry {
-                title: Some("Full reset (Weekly + 5 hr)".into()),
-                expires_at: now + chrono::Duration::hours(3),
-            }],
-            ..input(Vec::new())
-        };
-        let fired = decide(&case, 97, &mut state, now);
-        assert_eq!(fired.len(), 1);
-        assert_eq!(fired[0].urgency, Urgency::Normal);
-        assert!(
-            fired[0].title.starts_with("Claude — reset credit expires "),
-            "{}",
-            fired[0].title
-        );
-        assert!(
-            fired[0]
-                .body
-                .starts_with("Full reset (Weekly + 5 hr) — redeem within 3h"),
-            "{}",
-            fired[0].body
-        );
-    }
-
-    #[test]
-    fn banked_credit_dedupes_on_the_expiry_instant() {
-        let now = at(23, 12, 0);
-        let mut state = NotifyState::default();
-        let expiry = now + chrono::Duration::hours(10);
-        let case = RefreshInput {
-            credits: vec![CreditExpiry {
-                title: None,
-                expires_at: expiry,
-            }],
-            ..input(Vec::new())
-        };
-        assert_eq!(decide(&case, 97, &mut state, now).len(), 1);
-        assert_eq!(
-            decide(&case, 97, &mut state, now).len(),
-            0,
-            "same expiry is one notification"
-        );
-        assert!(
-            state
-                .entries
-                .keys()
-                .all(|key| key.starts_with("anthropic@gmail::credit::")),
-            "{:?}",
-            state.entries.keys().collect::<Vec<_>>()
-        );
-        // A different expiry instant is a different credit.
-        let later = RefreshInput {
-            credits: vec![CreditExpiry {
-                title: None,
-                expires_at: now + chrono::Duration::hours(20),
-            }],
-            ..input(Vec::new())
-        };
-        assert_eq!(decide(&later, 97, &mut state, now).len(), 1);
-    }
-
     // — State persistence ———————————————————————————
 
     #[test]
@@ -1021,7 +762,7 @@ mod tests {
         let (dir, path) = state_path();
         let mut state = NotifyState::default();
         state.entries.insert(
-            "anthropic::Weekly (7d)".into(),
+            "openrouter::Weekly (7d)".into(),
             KeyRecord {
                 notified_at: at(23, 12, 0),
                 reset_at_snapshot: Some(at(30, 0, 0)),
@@ -1069,93 +810,6 @@ mod tests {
         let mut state = NotifyState::read_from(&path);
         assert_eq!(decide(&high, 97, &mut state, now).len(), 1);
         drop(dir);
-    }
-
-    #[test]
-    fn anthropic_api_daily_notification_keys_migrate_without_refiring() {
-        let (dir, path) = state_path();
-        let old = at(17, 9, 0);
-        let newest = at(18, 9, 0);
-        let mut state = NotifyState::default();
-        for (label, notified_at) in [
-            ("Month to date (through Sep 17)", old),
-            ("Month to date (through Sep 18)", newest),
-            ("Completed daily buckets this month", old),
-        ] {
-            state.entries.insert(
-                format!("anthropic_api::{label}"),
-                KeyRecord {
-                    notified_at,
-                    reset_at_snapshot: None,
-                },
-            );
-        }
-        state.write_to(&path).unwrap();
-        let input = RefreshInput {
-            entry_id: "anthropic_api".into(),
-            vendor: "Anthropic API".into(),
-            account: None,
-            rows: vec![row("Spend (mo)", 98, None)],
-            credits: Vec::new(),
-        };
-        let mut sink = RecorderSink::default();
-        run_at(
-            &input,
-            97,
-            &path,
-            Duration::from_secs(2),
-            &mut sink,
-            at(19, 9, 0),
-        );
-
-        assert!(
-            sink.delivered.is_empty(),
-            "the existing crossing remains notified"
-        );
-        let migrated = NotifyState::read_from(&path);
-        assert_eq!(migrated.entries.len(), 1);
-        assert_eq!(
-            migrated.entries["anthropic_api::Spend (mo)"].notified_at,
-            newest
-        );
-        assert!(
-            migrated
-                .entries
-                .keys()
-                .all(|key| !key.contains("Month to date") && !key.contains("Completed daily"))
-        );
-        drop(dir);
-    }
-
-    #[test]
-    fn an_existing_stable_anthropic_api_notification_record_wins_migration() {
-        let stable_at = at(16, 9, 0);
-        let mut state = NotifyState::default();
-        for (label, notified_at) in [
-            ("Spend (mo)", stable_at),
-            ("Month to date (through Sep 18)", at(18, 9, 0)),
-        ] {
-            state.entries.insert(
-                format!("anthropic_api@work::{label}"),
-                KeyRecord {
-                    notified_at,
-                    reset_at_snapshot: None,
-                },
-            );
-        }
-        let input = RefreshInput {
-            entry_id: "anthropic_api@work".into(),
-            vendor: "Anthropic API".into(),
-            account: Some("work".into()),
-            rows: Vec::new(),
-            credits: Vec::new(),
-        };
-        assert!(decide(&input, 97, &mut state, at(19, 9, 0)).is_empty());
-        assert_eq!(state.entries.len(), 1);
-        assert_eq!(
-            state.entries["anthropic_api@work::Spend (mo)"].notified_at,
-            stable_at
-        );
     }
 
     // — Orchestration ————————————————————————————————
@@ -1245,7 +899,7 @@ mod tests {
             title: "Claude — Session (5h) at 100%".to_string(),
             body: "resets in 2h".to_string(),
             urgency,
-            key: "anthropic::Session (5h)".to_string(),
+            key: "openrouter::Session (5h)".to_string(),
         };
         let critical_toast = toast(Urgency::Critical);
 
@@ -1292,7 +946,7 @@ mod tests {
             "state bookkeeping is independent of delivery"
         );
         assert!(
-            NotifyState::read_from(&path).is_notified("anthropic@gmail::Weekly (7d)"),
+            NotifyState::read_from(&path).is_notified("openrouter@work::Weekly (7d)"),
             "the crossing is marked even though nothing was delivered"
         );
         drop(dir);
@@ -1315,410 +969,12 @@ mod tests {
         drop(dir);
     }
 
-    // — Projection from the shared assembly ——————————
-
-    #[test]
-    fn from_tab_projects_rows_account_and_credits() {
-        use crate::tui::app::{ReadyTab, TabId, TabState};
-        use crate::usage::{
-            AnthropicSnapshot, ResetCredit, ResetCredits, UsageWindow, VendorSnapshot,
-        };
-
-        let reset = at(24, 2, 0);
-        let state = TabState::Ready(Box::new(ReadyTab {
-            snapshot: VendorSnapshot::Anthropic(AnthropicSnapshot {
-                plan: "Claude Max 20x".into(),
-                session: UsageWindow {
-                    utilization_pct: 98,
-                    resets_at: Some(reset),
-                    window_duration: chrono::Duration::hours(5),
-                },
-                weekly: UsageWindow {
-                    utilization_pct: 42,
-                    resets_at: None,
-                    window_duration: chrono::Duration::days(7),
-                },
-                sonnet: None,
-                scoped: vec![],
-                extra: None,
-                // Claude banks resets too, and the expiry warning is the
-                // whole point of carrying them: a grant the sidebar lists but
-                // the notifier ignores is a half-delivered feature.
-                reset_credits: ResetCredits {
-                    available: 1,
-                    credits: vec![ResetCredit {
-                        title: Some("Opus 5.5 launch reset".into()),
-                        expires_at: Some(at(25, 0, 0)),
-                    }],
-                },
-                cloud_credits: None,
-                usage_credits: None,
-            }),
-            stale: false,
-            last_error: None,
-            fetched_at: None,
-            display: Default::default(),
-            monthly_cycle_day: None,
-        }));
-
-        let tab = TabId::account("gmail");
-        let projected =
-            RefreshInput::from_tab(&tab, &state, at(23, 12, 0)).expect("ready tab projects");
-        assert_eq!(projected.entry_id, "anthropic@gmail");
-        assert_eq!(projected.vendor, "Claude");
-        assert_eq!(projected.account.as_deref(), Some("gmail"));
-        assert_eq!(
-            projected.rows,
-            vec![
-                row("Session (5h)", 98, Some(reset)),
-                row("Weekly (7d)", 42, None),
-            ]
-        );
-        assert_eq!(
-            projected.credits,
-            vec![CreditExpiry {
-                title: Some("Opus 5.5 launch reset".into()),
-                expires_at: at(25, 0, 0),
-            }]
-        );
-
-        // A Codex snapshot carries its banked credits through.
-        let state = TabState::Ready(Box::new(ReadyTab {
-            snapshot: VendorSnapshot::Openai(crate::usage::OpenAiSnapshot {
-                plan: "ChatGPT Pro".into(),
-                session: None,
-                weekly: None,
-                code_review: None,
-                additional_limits: Vec::new(),
-                unavailable_models: Vec::new(),
-                credits: None,
-                reset_credits: Some(ResetCredits {
-                    available: 2,
-                    credits: vec![ResetCredit {
-                        title: Some("Full reset".into()),
-                        expires_at: Some(at(25, 0, 0)),
-                    }],
-                }),
-                source: crate::usage::OpenAiSource::CodexOauth,
-            }),
-            stale: false,
-            last_error: None,
-            fetched_at: None,
-            display: Default::default(),
-            monthly_cycle_day: None,
-        }));
-        let projected = RefreshInput::from_tab(
-            &TabId::vendor(crate::vendor::VendorId::Openai),
-            &state,
-            at(23, 12, 0),
-        )
-        .expect("ready tab projects");
-        assert_eq!(projected.entry_id, "openai");
-        assert_eq!(
-            projected.credits,
-            vec![CreditExpiry {
-                title: Some("Full reset".into()),
-                expires_at: at(25, 0, 0),
-            }]
-        );
-    }
-
-    #[test]
-    fn from_tab_skips_grouped_slices_and_unavailable_credits() {
-        use crate::tui::app::{ReadyTab, TabId, TabState};
-        use crate::usage::{
-            ResetCredit, ResetCredits, SuperGrokPeriod, SuperGrokProduct, SuperGrokSnapshot,
-            VendorSnapshot,
-        };
-
-        let state = TabState::Ready(Box::new(ReadyTab {
-            snapshot: VendorSnapshot::SuperGrok(SuperGrokSnapshot {
-                plan: "SuperGrok Heavy".into(),
-                account: "scope".into(),
-                weekly_pct: 97,
-                period: SuperGrokPeriod::Weekly,
-                reset_at: Some(at(26, 0, 0)),
-                prepaid_balance: None,
-                on_demand_used_cents: None,
-                on_demand_cap_cents: None,
-                // available == 0: the report would not surface these either.
-                reset_credits: ResetCredits {
-                    available: 0,
-                    credits: vec![ResetCredit {
-                        title: None,
-                        expires_at: Some(at(25, 0, 0)),
-                    }],
-                },
-                products: vec![SuperGrokProduct {
-                    label: "Grok Build".into(),
-                    percent: 94,
-                }],
-            }),
-            stale: false,
-            last_error: None,
-            fetched_at: None,
-            display: Default::default(),
-            monthly_cycle_day: None,
-        }));
-        let projected = RefreshInput::from_tab(
-            &TabId::vendor(crate::vendor::VendorId::Supergrok),
-            &state,
-            at(23, 12, 0),
-        )
-        .expect("ready tab projects");
-        // Only the overall meter — the grouped Grok Build slice shares its
-        // window and must not raise a second notification.
-        assert_eq!(projected.rows.len(), 1, "{:?}", projected.rows);
-        assert!(projected.credits.is_empty());
-    }
-
-    fn antigravity_ready(
-        session: i32,
-        third_party_session: i32,
-        weekly: i32,
-        third_party_weekly: i32,
-    ) -> crate::tui::app::TabState {
-        use crate::tui::app::{ReadyTab, TabState};
-        use crate::usage::{AntigravitySnapshot, AntigravitySource, UsageWindow, VendorSnapshot};
-
-        let window = |pct: i32, resets_at: DateTime<Utc>, hours: i64| {
-            Some(UsageWindow {
-                utilization_pct: pct,
-                resets_at: Some(resets_at),
-                window_duration: chrono::Duration::hours(hours),
-            })
-        };
-        TabState::Ready(Box::new(ReadyTab {
-            snapshot: VendorSnapshot::Antigravity(AntigravitySnapshot {
-                plan: "Google AI Pro".into(),
-                account: "acct:test".into(),
-                source: AntigravitySource::Local,
-                session: window(session, at(24, 2, 21), 5),
-                weekly: window(weekly, at(26, 1, 34), 168),
-                third_party_session: window(third_party_session, at(24, 2, 19), 5),
-                third_party_weekly: window(third_party_weekly, at(30, 19, 19), 168),
-                model_pools: Vec::new(),
-            }),
-            stale: false,
-            last_error: None,
-            fetched_at: None,
-            display: Default::default(),
-            monthly_cycle_day: None,
-        }))
-    }
-
-    /// Antigravity lays "Session" and "Weekly" headings over the same two
-    /// pool labels; each window needs its own name, or the four rows share
-    /// two dedupe keys.
-    #[test]
-    fn from_tab_names_repeated_labels_by_their_heading() {
-        use crate::tui::app::TabId;
-
-        let projected = RefreshInput::from_tab(
-            &TabId::vendor(crate::vendor::VendorId::Antigravity),
-            &antigravity_ready(3, 100, 98, 56),
-            at(23, 22, 0),
-        )
-        .expect("ready tab projects");
-        let windows: Vec<_> = projected
-            .rows
-            .iter()
-            .map(|row| row.window.as_str())
-            .collect();
-        assert_eq!(
-            windows,
-            [
-                "Session · Gemini",
-                "Session · Claude & GPT OSS",
-                "Weekly · Gemini",
-                "Weekly · Claude & GPT OSS",
-            ]
-        );
-    }
-
-    /// The reported bug: a weekly Gemini window at 98% beside a session one at
-    /// 3%, and a session Claude window at 100% beside a weekly one at 56%. Under
-    /// one key per label, the low twin cleared the record its high twin had
-    /// just written, so both notifications fired again on every refresh.
-    #[test]
-    fn a_window_whose_label_repeats_notifies_once() {
-        use crate::tui::app::TabId;
-
-        let tab = TabId::vendor(crate::vendor::VendorId::Antigravity);
-        let state = antigravity_ready(3, 100, 98, 56);
-        let mut notify_state = NotifyState::default();
-        let fired: Vec<Vec<String>> = (0..4)
-            .map(|refresh| {
-                let now = at(23, 22, 0) + chrono::Duration::minutes(5 * refresh);
-                let input = RefreshInput::from_tab(&tab, &state, now).expect("ready tab projects");
-                decide(&input, 97, &mut notify_state, now)
-                    .into_iter()
-                    .map(|notification| notification.title)
-                    .collect()
-            })
-            .collect();
-        assert_eq!(
-            fired[0],
-            [
-                "Antigravity — Session · Claude & GPT OSS at 100%",
-                "Antigravity — Weekly · Gemini at 98%",
-            ]
-        );
-        assert!(
-            fired[1..].iter().all(Vec::is_empty),
-            "later refreshes must stay quiet: {fired:?}"
-        );
-    }
-
-    /// A window's identity must not depend on whether its sibling arrived.
-    #[test]
-    fn a_window_keeps_its_key_when_its_sibling_disappears_or_returns() {
-        use crate::tui::app::{TabId, TabState};
-        use crate::usage::VendorSnapshot;
-
-        let tab = TabId::vendor(crate::vendor::VendorId::Antigravity);
-        for starts_with_session in [false, true] {
-            let mut notify_state = NotifyState::default();
-            // The unchanged weekly quota fires only once, regardless of
-            // which snapshot shape arrived first. A low reading while the
-            // session is absent must also re-arm that same weekly key.
-            let steps = [
-                (starts_with_session, 98, 1),
-                (!starts_with_session, 98, 0),
-                (starts_with_session, 98, 0),
-                (false, 20, 0),
-                (true, 98, 1),
-                (false, 98, 0),
-            ];
-            for (refresh, (has_session, weekly_pct, expected)) in steps.into_iter().enumerate() {
-                let mut state = antigravity_ready(3, 10, weekly_pct, 56);
-                let TabState::Ready(ready) = &mut state else {
-                    unreachable!();
-                };
-                let VendorSnapshot::Antigravity(snapshot) = &mut ready.snapshot else {
-                    unreachable!();
-                };
-                if !has_session {
-                    snapshot.session = None;
-                    snapshot.third_party_session = None;
-                }
-                let now = at(23, 22, 0) + chrono::Duration::minutes(5 * refresh as i64);
-                let input = RefreshInput::from_tab(&tab, &state, now).expect("ready tab projects");
-                let fired = decide(&input, 97, &mut notify_state, now);
-                assert_eq!(
-                    fired.len(),
-                    expected,
-                    "starts_with_session={starts_with_session}, refresh={refresh}: {fired:?}"
-                );
-                if let Some(notification) = fired.first() {
-                    assert_eq!(notification.key, "antigravity::Weekly · Gemini");
-                }
-            }
-        }
-    }
-
-    /// A window's identity must not depend on the day of the fetch either. An
-    /// Anthropic API spend row named after its covered day got a new key every
-    /// morning, so one crossing of the threshold notified again each day (#470).
-    #[test]
-    fn a_spend_over_the_threshold_notifies_once_as_the_covered_day_moves() {
-        use crate::tui::app::{ReadyTab, TabId, TabState};
-        use crate::usage::{AnthropicApiSnapshot, VendorSnapshot};
-
-        let tab = TabId::vendor(crate::vendor::VendorId::AnthropicApi);
-        let mut notify_state = NotifyState::default();
-        let fired: Vec<usize> = (17..=19)
-            .map(|day| {
-                let state = TabState::Ready(Box::new(ReadyTab {
-                    snapshot: VendorSnapshot::AnthropicApi(AnthropicApiSnapshot {
-                        spent: 98.0,
-                        limit: Some(100.0),
-                        covered_through: chrono::NaiveDate::from_ymd_opt(2026, 9, day),
-                    }),
-                    stale: false,
-                    last_error: None,
-                    fetched_at: None,
-                    display: Default::default(),
-                    monthly_cycle_day: None,
-                }));
-                let now = at(day + 1, 9, 0);
-                let input = RefreshInput::from_tab(&tab, &state, now).expect("ready tab projects");
-                decide(&input, 97, &mut notify_state, now).len()
-            })
-            .collect();
-        assert_eq!(fired, [1, 0, 0]);
-    }
-
-    /// Heading context applies to unique labels too, survives spacers, and
-    /// ends at a non-heading row. Unscoped metrics keep their bare names.
-    #[test]
-    fn metric_names_follow_heading_scope_even_for_unique_labels() {
-        use crate::balance::MetricHeadline;
-        use crate::pacing::PaceSeverity;
-        use crate::tui::panels::{Section, SectionProjection};
-
-        let projection = |section| SectionProjection {
-            section,
-            reset_at: None,
-            window: None,
-            group: None,
-            model_pool: false,
-            headline: MetricHeadline::Percent,
-            used_cents: None,
-            limit_cents: None,
-            regen: None,
-            percent_precise: None,
-            reading: None,
-        };
-        let metric = |label: &str, pct| {
-            projection(Section::Metric {
-                label: label.into(),
-                pct,
-                severity: PaceSeverity::Low,
-                value_label: format!("{pct}%"),
-                footnote: String::new(),
-            })
-        };
-        let heading = |label: &str| {
-            projection(Section::Text {
-                label: label.into(),
-                value: String::new(),
-            })
-        };
-        let rows = metric_rows([
-            metric("Unscoped", 20),
-            heading("Session"),
-            projection(Section::Spacer),
-            metric("General", 40),
-            metric("Video", 10),
-            projection(Section::Spacer),
-            heading("Weekly"),
-            metric("General", 60),
-            projection(Section::Text {
-                label: "Info".into(),
-                value: "Details".into(),
-            }),
-            metric("Other", 30),
-        ]);
-        let windows: Vec<_> = rows.iter().map(|row| row.window.as_str()).collect();
-        assert_eq!(
-            windows,
-            [
-                "Unscoped",
-                "Session · General",
-                "Session · Video",
-                "Weekly · General",
-                "Other",
-            ]
-        );
-    }
-
     #[test]
     fn from_tab_returns_none_for_unready_states() {
-        use crate::tui::app::{TabId, TabState};
+        use crate::provider::{TabId, TabState};
         assert!(
             RefreshInput::from_tab(
-                &TabId::vendor(crate::vendor::VendorId::Zai),
+                &TabId::vendor(crate::vendor::VendorId::Openrouter),
                 &TabState::Loading,
                 at(23, 12, 0)
             )
@@ -1726,7 +982,7 @@ mod tests {
         );
         assert!(
             RefreshInput::from_tab(
-                &TabId::vendor(crate::vendor::VendorId::Zai),
+                &TabId::vendor(crate::vendor::VendorId::Openrouter),
                 &TabState::error("not signed in"),
                 at(23, 12, 0)
             )

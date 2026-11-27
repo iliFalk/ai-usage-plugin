@@ -1,13 +1,14 @@
-# OpenRouter account guide
+# OpenRouter and DeepSeek account guide
 
-ai-usagebar can report several OpenRouter keys without running separate config
-or cache roots. The existing `[openrouter]` key remains the default account.
-The same `[[<vendor>.accounts]]` array works for the other API-key providers;
-the [API-key account guide](api-key-accounts.md) covers them.
+ai-usagebar can report several keys of one provider without running separate
+config or cache roots. The provider's own `[<section>]` key is the default
+account; `[[<section>.accounts]]` adds named ones. Only OpenRouter and DeepSeek
+offer the array — OpenCode Go takes a single key (or the official OpenCode CLI's
+own login).
 
 ## Add named accounts
 
-Add one entry per extra key to `~/.config/ai-usagebar/config.toml`:
+One entry per extra key in `~/.config/ai-usagebar/config.toml`:
 
 ```toml
 [openrouter]
@@ -24,71 +25,60 @@ label = "personal"
 api_key = "sk-or-v1-personal"
 ```
 
-An account can use `api_key_env`, an inline `api_key`, or both. The environment
+The same shape under `[deepseek]`, with `DEEPSEEK_API_KEY`:
+
+```toml
+[deepseek]
+enabled = true
+[[deepseek.accounts]]
+label = "work"
+api_key_env = "DEEPSEEK_WORK_API_KEY"
+```
+
+An account can use `api_key_env`, an inline `api_key`, or both; the environment
 variable wins when both are set. If you store any key inline, ai-usagebar
 tightens the config file to mode `0600` on Unix.
 
-Labels cannot be empty, contain path separators, drive prefixes, or control
-characters, or use a reserved cache filename. Duplicate labels are rejected.
+Labels cannot be empty, contain path separators, drive prefixes or control
+characters, or use a reserved cache filename. Duplicate labels are rejected, and
+an entry that names no key source at all is an error rather than a silent
+default.
 
 ## What one entry separates
 
-Each account entry is one OpenRouter login's key — one entry per workspace is
-the pattern for working across several workspaces. Be aware of what it does
-*not* separate: keys created inside the same OpenRouter workspace share that
-workspace's billing account, so two entries holding two keys from one
-workspace both report that workspace's credits and spend. The per-entry split
-is per login session (workspace), not per key within a single bill.
+Each entry is one login's key — one entry per workspace is the pattern for
+working across several workspaces. Be aware of what it does *not* separate: keys
+created inside the same OpenRouter workspace share that workspace's billing
+account, so two entries holding two keys from one workspace both report that
+workspace's credits and spend. The per-entry split is per login session
+(workspace), not per key within a single bill.
 
-## Select an account
+## Where accounts appear
 
-Named accounts appear automatically as separate TUI tabs and `usage` report
-entries. Select one directly in the widget:
+Named accounts become their own `usage` report entries, with ids
+`openrouter@work` and `deepseek@work`, so the Omarchy panel lists one row per
+account and switches between them like any other provider.
 
-```bash
-ai-usagebar --vendor openrouter --account work
-```
-
-The default account keeps the original
-`~/.cache/ai-usagebar/openrouter/` cache. Named accounts use
+The default account keeps the provider-root cache
+(`~/.cache/ai-usagebar/openrouter/`); a named account uses
 `~/.cache/ai-usagebar/openrouter/<label>/`.
 
-To omit the unnamed account from aggregate views when all keys are named:
+To omit the unnamed entry from the report when every key is named:
 
 ```toml
 [openrouter]
 show_default_account = false
 ```
 
-This setting does not disable direct access to the default key. When no named
-accounts exist, the default entry remains visible.
+It stays when `accounts` is empty, so a provider never loses its only entry.
 
-## Use a named account in Waybar
+## Recent-model activity (optional management key)
 
-```jsonc
-"custom/openrouter-work": {
-    "exec": "ai-usagebar --vendor openrouter --account work --format '{or_balance} · {or_used_today}'",
-    "return-type": "json",
-    "interval": 300,
-    "tooltip": true
-}
-```
-
-The Settings panel edits the default key. Add or change named account entries
-in `config.toml`; saving other settings preserves them.
-
-## Recent models activity (optional management key)
-
-The "Recent models" block lists the two most recently used models with their
-spend and request counts. It reads `GET /api/v1/activity`, which rejects the
-regular inference key — it answers only to an OpenRouter *management* key
-(create one at <https://openrouter.ai/settings/management-keys>). When no
-management key resolves, the request is skipped and the block simply does not
-appear; the regular key is never sent to that endpoint.
+`GET /api/v1/activity` — the "Recent models" block — needs an OpenRouter
+*management* key, not the inference key. Set it per account or for the default:
 
 ```toml
 [openrouter]
-# Default account; OPENROUTER_MANAGEMENT_API_KEY is the default var name.
 management_api_key_env = "OPENROUTER_MANAGEMENT_API_KEY"
 
 [[openrouter.accounts]]
@@ -97,5 +87,7 @@ api_key_env = "OPENROUTER_WORK_API_KEY"
 management_api_key_env = "OPENROUTER_WORK_MANAGEMENT_API_KEY"
 ```
 
-A named account resolves a management key only from its own
-`management_api_key_env`; it never inherits the default account's.
+The inference key is never sent to `/activity`. A named account never inherits
+the default account's management key, and when no management key resolves the
+request is skipped rather than fired at a 401 — the rest of the entry still
+reports.

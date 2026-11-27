@@ -1,148 +1,51 @@
-//! `ai-usagebar usage` — quota and time-to-reset for everything in the config,
-//! in one pass.
+//! `ai-usagebar usage` — quota and balance for every configured provider, in
+//! one pass.
 //!
-//! The widget answers "how is *this* vendor doing" one process at a time, which
-//! is what a status bar needs and what a person checking on four Claude
-//! accounts does not. This walks the same tab set the TUI builds — every
-//! enabled vendor, plus one entry per named Claude account — and prints what
-//! each one has left.
-//!
-//! Deliberately thin: [`crate::tui::app::tabs_from_config`] already decides
-//! what is configured, [`crate::tui::app::refresh_one`] already fetches and
-//! parses it, and [`crate::tui::panels::sections_for`] already projects any
-//! vendor's snapshot into labelled sections carrying every reported value.
-//! So this file only enumerates, projects, and formats — no vendor
-//! ever needs to know it exists.
-
-use std::path::PathBuf;
+//! This walks the provider client's entry list, refreshes each one, projects
+//! its snapshot into labelled rows, and prints either the machine-readable
+//! document the Omarchy panel parses or a plain text report. Deliberately thin:
+//! [`crate::provider::tabs_from_config`] decides what is configured,
+//! [`crate::provider::refresh_one`] fetches and caches it, and
+//! [`crate::sections::project`] projects it. No provider ever needs to know
+//! this file exists.
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::json;
 
 use crate::config::Config;
-use crate::context::activity::{ProcessProbe, SessionActivity, SystemProbe};
-use crate::context::{ContextScan, ContextSession, ContextUsage};
-use crate::tui::app::{TabId, TabSource, TabState, refresh_one, tabs_with_desktop};
-use crate::tui::context::format_tokens;
-use crate::tui::panels::{Section, sections_with_metadata_for};
+use crate::provider::{TabId, TabState, refresh_one, tabs_from_config};
+use crate::sections::{Section, project};
 
-/// Matches the widget's `--pace-tolerance` default; only affects the pacing
-/// note appended to a metric's detail line.
+/// Matches the projection's default; only affects the pacing note appended to
+/// a metric's detail line.
 const PACE_TOLERANCE: u32 = 5;
-
-/// Sub-group heading the Claude entry's session rows carry (#255). Frontends
-/// that honour `group` draw them compactly beneath this heading, exactly like
-/// SuperGrok's product slices under `"Breakdown"` (#213).
-const SESSIONS_GROUP: &str = "Sessions";
-
-/// At most this many recent sessions become report rows. The context module
-/// already bounds its scan; this tighter cap keeps one provider's card
-/// readable and leaves room under the popover's per-entry section limit.
-const MAX_SESSION_ROWS: usize = 8;
-
-/// Label of the row that says what a Claude account's live sessions are doing
-/// (#356). Its value is never empty, so no frontend mistakes it for a heading.
-const ACTIVITY_LABEL: &str = "Activity";
 
 /// Version of the tolerant, machine-readable `usage --json` contract.
 /// Increment only when an incompatible change cannot be represented by adding
 /// or omitting fields.
 const USAGE_SCHEMA_VERSION: u8 = 1;
 
-/// One configured vendor or account.
+/// One configured provider or named account.
 struct Entry {
     id: String,
     name: String,
     display_name: String,
-    /// The vendor's `{vendor_short}` code. Frontends that want a Waybar-style
-    /// provider tag take it from here rather than keeping their own table.
+    /// The provider's `{vendor_short}` code. Frontends take it from here rather
+    /// than keeping their own table.
     short_name: String,
-    /// The vendor's bar glyph. Same rule as `short_name`: one table, in Rust.
+    /// The provider's bar glyph. Same rule as `short_name`: one table, in Rust.
     icon: String,
-    /// Built-in vendor slug whose brand mark this entry should be drawn with.
-    /// A built-in is its own brand; a `[[custom]]` provider has one only when
-    /// it declared `brand`. The asset itself stays with the frontend — each
-    /// ships its own artwork — so this names the provider, never a file.
-    brand: Option<String>,
     plan: Option<String>,
     sections: Vec<ReportSection>,
     error: Option<String>,
     stale: bool,
     fetched_at: Option<DateTime<Utc>>,
-    /// Structured banked-reset inventory for rich frontends. The human-readable
-    /// block remains in `sections` for the text report and older consumers.
-    reset_credits: Option<crate::usage::ResetCredits>,
-    /// How many of this Claude account's live sessions are working or waiting
-    /// on the user (#356). Absent when none are, and whenever the opt-in
-    /// context monitor is off; the readable form is an `"Activity"` row.
-    activity: Option<SessionActivity>,
 }
 
-#[derive(Debug, Clone)]
-enum ReportTarget {
-    Tab(TabId),
-    AntigravityAccount(TabId, Box<crate::antigravity::statusline::AccountSession>),
-}
-
-fn report_target_id(target: &ReportTarget) -> String {
-    match target {
-        ReportTarget::Tab(tab) => tab_id(tab),
-        ReportTarget::AntigravityAccount(_, account) => {
-            format!("antigravity@{}", account.id_suffix)
-        }
-    }
-}
-
-fn expand_antigravity_tabs(
-    tabs: &[TabId],
-    accounts: &[crate::antigravity::statusline::AccountSession],
-) -> Vec<ReportTarget> {
-    let mut targets = Vec::new();
-    for tab in tabs {
-        if tab.vendor_id() == Some(crate::vendor::VendorId::Antigravity) && !accounts.is_empty() {
-            targets.extend(
-                accounts.iter().cloned().map(|account| {
-                    ReportTarget::AntigravityAccount(tab.clone(), Box::new(account))
-                }),
-            );
-        } else {
-            targets.push(ReportTarget::Tab(tab.clone()));
-        }
-    }
-    targets
-}
-
-fn report_targets_matching(targets: &[ReportTarget], entry_id: &str) -> Vec<ReportTarget> {
-    targets
-        .iter()
-        .filter(|target| report_target_id(target) == entry_id)
-        .cloned()
-        .collect()
-}
-
-fn report_targets_for_filter(
-    targets: &[ReportTarget],
-    provider: &str,
-    account: Option<&str>,
-) -> Vec<ReportTarget> {
-    let exact = account.map(|label| format!("{provider}@{label}"));
-    targets
-        .iter()
-        .filter(|target| {
-            let id = report_target_id(target);
-            exact.as_ref().map_or_else(
-                || id == provider || id.starts_with(&format!("{provider}@")),
-                |wanted| id == *wanted,
-            )
-        })
-        .cloned()
-        .collect()
-}
-
-/// Lossless machine-readable projection of a TUI panel row. `metrics` remains
+/// Lossless machine-readable projection of one panel row. `metrics` remains
 /// available in JSON as a convenience view over only the gauge rows; callers
-/// that need every reported value should consume this ordered list.
+/// that need every reported value consume `sections`.
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ReportSection {
@@ -154,69 +57,20 @@ enum ReportSection {
         /// Which of `percent` and `value` this metric puts on the bar —
         /// `"percent"` or `"value"`. A consumer that honours it draws the named
         /// one and leaves the other in the detail line, rather than inferring a
-        /// balance row from its label. Always present, so no consumer has to
-        /// guess; not every consumer reads it — Waybar and GNOME take their bar
-        /// text from per-vendor formats instead.
+        /// balance row from its label.
         headline: String,
         severity: String,
         reset_at: Option<DateTime<Utc>>,
         /// Full length of the reset window in seconds, present only when the
-        /// vendor states it exactly (rolling 5h/7d windows). A frontend that
+        /// provider states it exactly (a rolling 5h/7d window). A frontend that
         /// wants a pace indicator needs both this and `reset_at`; a calendar
         /// month or an unstated window omits the field rather than guessing.
         #[serde(skip_serializing_if = "Option::is_none")]
         window_secs: Option<u64>,
-        /// Sub-group heading the metric belongs under (SuperGrok's product
-        /// slices under `"Breakdown"`), so a frontend can draw it compactly
-        /// beneath that heading instead of as a peer of the overall meter.
-        /// Absent for metrics that stand on their own.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        group: Option<String>,
-        /// Amount the window refills by when it reopens (Synthetic's weekly
-        /// credit tick, e.g. `"2%"`). Present only for refill-style windows;
-        /// a frontend countdown reads "Regenerates X in …" instead of
-        /// "Resets in …".
-        #[serde(skip_serializing_if = "Option::is_none")]
-        regen: Option<String>,
-        /// The percentage with its decimal precision preserved (Synthetic's
-        /// weekly budget, e.g. `29.52`). Present only when the vendor's API
-        /// reports a fraction; a frontend that prints a figure uses this and
-        /// leaves the rounded `percent` to meters and severity colours.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        percent_precise: Option<f64>,
-        /// How a frontend should read the percentage (`"left"` for
-        /// refill-style windows): what remains, whatever the global
-        /// reading. Fixed windows omit the field and follow the setting.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        reading: Option<String>,
-        /// A per-model quota pool rather than one of the provider's shared
-        /// windows (Antigravity's "Gemini 4 Argon"): a frontend that shows one
-        /// figure for the provider ranks it below the shared windows, so an
-        /// exhausted model does not read as an exhausted provider. Present
-        /// only when true.
-        #[serde(skip_serializing_if = "std::ops::Not::not")]
-        model_pool: bool,
     },
     Text {
         label: String,
         value: String,
-        /// Spend behind `value`, in USD cents. Present on Cursor's On-Demand
-        /// row so a frontend can meter that prepaid cap without parsing the
-        /// formatted `$spent / $cap` string. Omitted for every other text row.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        used_cents: Option<i64>,
-        /// Prepaid cap in USD cents. Present only when the cap is positive.
-        /// Spend with no cap stays a plain amount in `value`.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        limit_cents: Option<i64>,
-        /// How much of `limit_cents` is already used, rounded half up the same
-        /// way a bar percentage is. Above 100 when spend passes the cap.
-        /// Present only together with a positive cap.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        percent: Option<u16>,
-        /// Bar colour for `percent`, on the same scale as a metric's.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        severity: Option<String>,
     },
     Block {
         label: String,
@@ -232,196 +86,6 @@ impl ReportSection {
                 Some(label)
             }
             Self::Spacer => None,
-        }
-    }
-}
-
-/// Snapshot every configured vendor as the JSON `usage --json` prints.
-///
-/// A frontend hosted in the same process calls this instead of spawning a
-/// console subprocess. Errors are the same user-facing strings `usage` would
-/// print.
-pub async fn collect_json() -> std::result::Result<String, String> {
-    let (entries, primary, overview) = collect_entries().await?;
-    Ok(render_json_document(&entries, primary, overview.as_deref()))
-}
-
-/// Snapshot only one provider, optionally narrowed to one named account.
-/// Filtering happens before refreshes, so an MCP query never contacts
-/// unrelated providers merely to discard their results afterward.
-pub async fn collect_filtered_json(
-    provider: Option<&str>,
-    account: Option<&str>,
-) -> std::result::Result<String, String> {
-    if provider.is_none() {
-        if account.is_some() {
-            return Err("account requires provider".into());
-        }
-        return collect_json().await;
-    }
-    let provider = provider.unwrap_or_default().trim();
-    if provider.is_empty() {
-        return Err("provider must not be empty".into());
-    }
-    let account = account.map(str::trim);
-    if account.is_some_and(str::is_empty) {
-        return Err("account must not be empty".into());
-    }
-
-    let config = Config::load().map_err(|error| error.user_message())?;
-    let client = crate::widget::run::http_client().map_err(|error| error.user_message())?;
-    let tabs: Vec<TabId> = tabs_with_desktop(&config)
-        .into_iter()
-        .filter(|tab| tab_provider_id(tab) == provider)
-        .collect();
-    if tabs.is_empty() {
-        return Err(format!("no enabled provider matches {provider}"));
-    }
-    let accounts = if provider == crate::vendor::VendorId::Antigravity.slug() {
-        crate::antigravity::statusline::active_accounts().unwrap_or_default()
-    } else {
-        Vec::new()
-    };
-    let targets = report_targets_for_filter(
-        &expand_antigravity_tabs(&tabs, &accounts),
-        provider,
-        account,
-    );
-    if targets.is_empty() {
-        let suffix = account.map_or(String::new(), |label| format!(" account {label}"));
-        return Err(format!("no enabled provider matches {provider}{suffix}"));
-    }
-    let entries = collect_report_targets_for(&client, &config, &targets).await;
-    let overview = config.ui.overview_vendors.as_ref().map(|vendors| {
-        vendors
-            .iter()
-            .map(|vendor| vendor.slug())
-            .collect::<Vec<_>>()
-    });
-    Ok(render_json_document(
-        &entries,
-        config.ui.primary.map(|vendor| vendor.slug()),
-        overview.as_deref(),
-    ))
-}
-
-fn tab_provider_id(tab: &TabId) -> String {
-    match &tab.source {
-        TabSource::Builtin(vendor) => vendor.slug().to_string(),
-        TabSource::Custom { id, .. } => format!("custom:{id}"),
-    }
-}
-
-/// Snapshot one configured vendor or account — the entry whose `id` is
-/// `entry_id`, as `collect_json` would have labelled it — as `{"entries": [..]}`.
-///
-/// A frontend's per-provider "Refresh" calls this so re-fetching one vendor
-/// does not hit every other one. No `primary` key: the caller already knows
-/// which entry it asked for.
-pub async fn collect_entry_json(entry_id: &str) -> std::result::Result<String, String> {
-    let config = Config::load().map_err(|error| error.user_message())?;
-    let client = crate::widget::run::http_client().map_err(|error| error.user_message())?;
-    let tabs = tabs_with_desktop(&config);
-    let accounts = if tabs
-        .iter()
-        .any(|tab| tab.vendor_id() == Some(crate::vendor::VendorId::Antigravity))
-    {
-        crate::antigravity::statusline::active_accounts().unwrap_or_default()
-    } else {
-        Vec::new()
-    };
-    let targets = report_targets_matching(&expand_antigravity_tabs(&tabs, &accounts), entry_id);
-    if targets.is_empty() {
-        return Err(format!("no enabled provider matches {entry_id}"));
-    }
-    let entries = collect_report_targets_for(&client, &config, &targets).await;
-    Ok(render_json_entries(&entries))
-}
-
-/// The tabs whose report entry would carry `entry_id` — at most one, since
-/// [`tab_id`] is unique across a tab list, but kept as a slice so the caller
-/// runs the same loop as the full report.
-#[cfg(test)]
-fn tabs_matching(tabs: &[TabId], entry_id: &str) -> Vec<TabId> {
-    tabs.iter()
-        .filter(|tab| tab_id(tab) == entry_id)
-        .cloned()
-        .collect()
-}
-
-async fn collect_entries()
--> std::result::Result<(Vec<Entry>, Option<&'static str>, Option<Vec<&'static str>>), String> {
-    let config = Config::load().map_err(|error| error.user_message())?;
-    let client = crate::widget::run::http_client().map_err(|error| error.user_message())?;
-    let tabs = tabs_with_desktop(&config);
-    if tabs.is_empty() {
-        return Err(format!(
-            "no vendors enabled in {}",
-            crate::config::config_path_hint()
-        ));
-    }
-    let entries = collect_entries_for(&client, &config, &tabs).await;
-    let overview = config
-        .ui
-        .overview_vendors
-        .as_ref()
-        .map(|vendors| vendors.iter().map(|vendor| vendor.slug()).collect());
-    Ok((
-        entries,
-        config.ui.primary.map(|vendor| vendor.slug()),
-        overview,
-    ))
-}
-
-async fn collect_entries_for(
-    client: &reqwest::Client,
-    config: &Config,
-    tabs: &[TabId],
-) -> Vec<Entry> {
-    let accounts = if tabs
-        .iter()
-        .any(|tab| tab.vendor_id() == Some(crate::vendor::VendorId::Antigravity))
-    {
-        crate::antigravity::statusline::active_accounts().unwrap_or_default()
-    } else {
-        Vec::new()
-    };
-    let targets = expand_antigravity_tabs(tabs, &accounts);
-    collect_report_targets_for(client, config, &targets).await
-}
-
-async fn collect_report_targets_for(
-    client: &reqwest::Client,
-    config: &Config,
-    targets: &[ReportTarget],
-) -> Vec<Entry> {
-    // Sequential on purpose: several of these share a per-vendor cache lock,
-    // and firing every account at Anthropic at once is a good way to get
-    // rate-limited for no gain on a handful of entries.
-    let mut entries = Vec::with_capacity(targets.len());
-    for target in targets {
-        entries.push(entry_for_report_target(client, config, target).await);
-    }
-    // #356: what each Claude account's live sessions are doing, ahead of the
-    // #255 session list. Both are best-effort local reads: nothing to read adds
-    // nothing rather than failing the report.
-    attach_session_activity(config, &mut entries).await;
-    // #255: the opt-in context monitor's sessions ride on the Claude entry,
-    // best-effort — a missing transcript root or unreadable tail adds nothing
-    // rather than failing the report.
-    attach_context_sessions(config, &mut entries).await;
-    entries
-}
-
-async fn entry_for_report_target(
-    client: &reqwest::Client,
-    config: &Config,
-    target: &ReportTarget,
-) -> Entry {
-    match target {
-        ReportTarget::Tab(tab) => entry_for(client, config, tab).await,
-        ReportTarget::AntigravityAccount(tab, account) => {
-            entry_from_antigravity_account(tab, account, Utc::now())
         }
     }
 }
@@ -446,53 +110,63 @@ pub async fn run(json: bool) -> i32 {
     report_exit_code(&entries)
 }
 
-async fn entry_for(client: &reqwest::Client, config: &Config, tab: &TabId) -> Entry {
-    let state = refresh_one(client, config, tab).await;
-    entry_from_state_with_config(config, tab, &state, Utc::now())
+async fn collect_entries()
+-> std::result::Result<(Vec<Entry>, Option<&'static str>, Option<Vec<&'static str>>), String> {
+    let config = Config::load().map_err(|error| error.user_message())?;
+    let client = http_client().map_err(|error| error.user_message())?;
+    let tabs = tabs_from_config(&config);
+    if tabs.is_empty() {
+        return Err(format!(
+            "no providers enabled in {}",
+            crate::config::config_path_hint()
+        ));
+    }
+    let entries = collect_entries_for(&client, &config, &tabs).await;
+    let overview = config
+        .ui
+        .overview_vendors
+        .as_ref()
+        .map(|vendors| vendors.iter().map(|vendor| vendor.slug()).collect());
+    Ok((
+        entries,
+        config.ui.primary.map(|vendor| vendor.slug()),
+        overview,
+    ))
 }
 
-fn entry_from_state_with_config(
+/// The shared HTTP client: one timeout and one redirect policy, so a provider
+/// cannot answer a redirect question differently from its siblings.
+fn http_client() -> crate::error::Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .timeout(crate::vendor::HTTP_CLIENT_TIMEOUT)
+        .redirect(crate::vendor::same_origin_redirect_policy())
+        .build()
+        .map_err(|error| crate::error::AppError::Other(format!("http client: {error}")))
+}
+
+/// Sequential on purpose: several entries share a per-provider cache lock, and
+/// firing every named account at one endpoint at once is a good way to get
+/// rate-limited for no gain on a handful of entries.
+async fn collect_entries_for(
+    client: &reqwest::Client,
     config: &Config,
-    tab: &TabId,
-    state: &TabState,
-    now: chrono::DateTime<Utc>,
-) -> Entry {
-    let mut entry = entry_from_state(tab, state, now);
-    if let TabSource::Custom { id, .. } = &tab.source {
-        entry.brand = config
-            .custom_by_id(id)
-            .and_then(|provider| provider.brand.clone());
+    tabs: &[TabId],
+) -> Vec<Entry> {
+    let mut entries = Vec::with_capacity(tabs.len());
+    for tab in tabs {
+        let state = refresh_one(client, config, tab).await;
+        entries.push(entry_from_state(tab, &state, Utc::now()));
     }
-    entry
+    entries
 }
 
-/// Consumed percent of a prepaid cap, rounded half up for a non-negative
-/// spend. `None` when the cap is not positive. The result is not clamped at
-/// 100: spend past the cap is a real percentage, and the bar shows it.
-///
-/// Half up matches `Math.round` on the non-negative integers a frontend would
-/// divide itself. A tie (`.5`) only happens when the cap is even, so adding
-/// `limit / 2` before the truncating division is the same rounding.
-fn consumed_percent(used: i64, limit: i64) -> Option<u16> {
-    if limit <= 0 {
-        return None;
-    }
-    let used = i128::from(used.max(0));
-    let limit = i128::from(limit);
-    let pct = (used * 100 + limit / 2) / limit;
-    Some(u16::try_from(pct).unwrap_or(u16::MAX))
-}
-
-fn entry_from_state(tab: &TabId, state: &TabState, now: chrono::DateTime<Utc>) -> Entry {
+fn entry_from_state(tab: &TabId, state: &TabState, now: DateTime<Utc>) -> Entry {
     let mut entry = Entry {
         id: tab_id(tab),
         name: tab_name(tab),
         display_name: tab_display_name(tab),
-        // #164's naming (a custom tab has no VendorId) with #162's plan
-        // (an error card still names the plan from the OAuth blob).
-        short_name: tab_short_name(tab),
-        icon: tab_icon(tab),
-        brand: tab_brand(tab),
+        short_name: tab.vendor.short_name().to_string(),
+        icon: tab.vendor.bar_icon().to_string(),
         plan: match state {
             TabState::Error { plan, .. } => plan
                 .as_deref()
@@ -512,15 +186,13 @@ fn entry_from_state(tab: &TabId, state: &TabState, now: chrono::DateTime<Utc>) -
             TabState::Ready(ready) => ready.fetched_at,
             _ => None,
         },
-        reset_credits: reset_credits_for(state),
-        activity: None,
     };
-    // The error is already a first-class entry field. Do not duplicate the
-    // TUI's interactive retry instructions as report data.
+    // The error is already a first-class entry field. Do not duplicate an
+    // interactive retry instruction as report data.
     if entry.error.is_some() {
         return entry;
     }
-    for projected in sections_with_metadata_for(state, now, PACE_TOLERANCE) {
+    for projected in project(state, now, PACE_TOLERANCE) {
         match projected.section {
             Section::Title { left, .. } => entry.plan = Some(left),
             Section::Metric {
@@ -543,36 +215,10 @@ fn entry_from_state(tab: &TabId, state: &TabState, now: chrono::DateTime<Utc>) -
                         .window
                         .filter(|window| window.num_seconds() > 0)
                         .map(|window| window.num_seconds() as u64),
-                    group: projected.group.map(str::to_string),
-                    regen: projected.regen,
-                    percent_precise: projected.percent_precise,
-                    reading: projected.reading.map(str::to_string),
-                    model_pool: projected.model_pool,
                 });
             }
             Section::Text { label, value } => {
-                // A cap is only meaningful next to the spend it meters, and
-                // only when that cap is positive. Anything else stays off
-                // the JSON.
-                let used_cents = projected.used_cents;
-                let limit_cents = used_cents.and(projected.limit_cents.filter(|limit| *limit > 0));
-                let percent = match (used_cents, limit_cents) {
-                    (Some(used), Some(limit)) => consumed_percent(used, limit),
-                    _ => None,
-                };
-                let severity = percent.map(|percent| {
-                    crate::pango::severity_for(i32::from(percent))
-                        .as_str()
-                        .to_string()
-                });
-                entry.sections.push(ReportSection::Text {
-                    label,
-                    value,
-                    used_cents,
-                    limit_cents,
-                    percent,
-                    severity,
-                });
+                entry.sections.push(ReportSection::Text { label, value });
             }
             Section::Block { label, body } => {
                 entry.sections.push(ReportSection::Block { label, body });
@@ -581,297 +227,6 @@ fn entry_from_state(tab: &TabId, state: &TabState, now: chrono::DateTime<Utc>) -
         }
     }
     entry
-}
-
-fn entry_from_antigravity_account(
-    tab: &TabId,
-    account: &crate::antigravity::statusline::AccountSession,
-    now: DateTime<Utc>,
-) -> Entry {
-    let state = TabState::Ready(Box::new(crate::tui::app::ReadyTab {
-        snapshot: crate::usage::VendorSnapshot::Antigravity(account.snapshot.clone()),
-        stale: now.signed_duration_since(account.updated_at)
-            > crate::antigravity::statusline::STALE_AFTER,
-        last_error: None,
-        fetched_at: Some(account.updated_at),
-        display: crate::balance::DisplayPrefs::default(),
-        monthly_cycle_day: None,
-    }));
-    let mut entry = entry_from_state(tab, &state, now);
-    entry.id = format!("antigravity@{}", account.id_suffix);
-    entry.name = format!("antigravity · {}", account.masked_email);
-    entry.display_name = format!("Antigravity · {}", account.masked_email);
-    entry
-}
-
-fn reset_credits_for(state: &TabState) -> Option<crate::usage::ResetCredits> {
-    match state {
-        TabState::Ready(ready) => ready.snapshot.reset_credits().cloned(),
-        _ => None,
-    }
-}
-
-/// #255: surface the opt-in context monitor's recent Claude Code sessions on
-/// the report's Claude entry, as grouped sub-rows under `"Sessions"`.
-///
-/// Sessions are machine-local CLI state, not an account's quota, so they land
-/// on the first ready Claude entry exactly once (never per account), and only
-/// when `[context] enabled` — users who never opted in see no change. A scan
-/// that found nothing, or failed, adds no rows and never fails the report.
-async fn attach_context_sessions(config: &Config, entries: &mut [Entry]) {
-    // Check before scanning: a disabled monitor must not so much as stat the
-    // transcript directory, matching the TUI's own gating.
-    if !config.context.enabled {
-        return;
-    }
-    let sections = session_sections_for(config, scan_context(config).await.as_ref());
-    if sections.is_empty() {
-        return;
-    }
-    attach_session_sections(entries, sections);
-}
-
-/// Run the bounded transcript scan off the async executor, mirroring the TUI
-/// host's own context scan. Any failure — including the join — means "no
-/// sessions to show", not an error for the report to carry.
-async fn scan_context(config: &Config) -> Option<ContextScan> {
-    let context_config = config.context.clone();
-    tokio::task::spawn_blocking(move || {
-        let path = match context_config.projects_path.as_deref() {
-            Some(path) => std::borrow::Cow::Borrowed(path),
-            None => std::borrow::Cow::Owned(crate::context::default_projects_path()?),
-        };
-        crate::context::scan_dir(&path, &context_config)
-    })
-    .await
-    .ok()?
-    .ok()
-}
-
-/// The gating the async path defers to: disabled config or a failed scan
-/// yields no rows, so the opt-in behaviour is testable without a filesystem.
-fn session_sections_for(config: &Config, scan: Option<&ContextScan>) -> Vec<ReportSection> {
-    if !config.context.enabled {
-        return Vec::new();
-    }
-    scan.map(context_session_sections).unwrap_or_default()
-}
-
-/// Extend the first ready Claude entry with `sections`. Entries for other
-/// vendors — and a Claude entry that errored, whose sections the text report
-/// deliberately does not print — are untouched.
-fn attach_session_sections(entries: &mut [Entry], sections: Vec<ReportSection>) {
-    let Some(entry) = entries
-        .iter_mut()
-        .find(|entry| is_claude_entry(entry) && entry.error.is_none())
-    else {
-        return;
-    };
-    entry.sections.extend(sections);
-}
-
-/// #356: count each ready Claude entry's live sessions by status, from the
-/// `sessions/` directory of the `CLAUDE_CONFIG_DIR` that account occupies.
-///
-/// Gated on `[context] enabled` like the session list, so a user who never
-/// opted in sees no change and no directory is so much as listed. Unlike the
-/// list, activity belongs to an account, so every Claude entry gets its own.
-async fn attach_session_activity(config: &Config, entries: &mut [Entry]) {
-    attach_session_activity_with(config, entries, SystemProbe, || {
-        config.anthropic.active_cli_label()
-    })
-    .await;
-}
-
-/// [`attach_session_activity`] with the process probe and the live CLI login
-/// injected, so tests touch neither the real process table nor `~/.claude.json`.
-async fn attach_session_activity_with(
-    config: &Config,
-    entries: &mut [Entry],
-    probe: impl ProcessProbe + Send + 'static,
-    active_cli_label: impl FnOnce() -> Option<String>,
-) {
-    if !config.context.enabled {
-        return;
-    }
-    let targets = activity_targets(config, entries, active_cli_label().as_deref());
-    if targets.is_empty() {
-        return;
-    }
-    let Ok(scanned) =
-        tokio::task::spawn_blocking(move || scan_activity_targets(targets, &probe)).await
-    else {
-        return;
-    };
-    apply_session_activity(entries, scanned);
-}
-
-/// The ready Claude entries whose config directory is known, by index, each
-/// directory once: two entries reading the same credentials describe the same
-/// account, and the first keeps its activity.
-///
-/// An errored entry is skipped for the same reason [`attach_session_sections`]
-/// skips it: frontends do not draw an errored entry's sections. A Claude
-/// Desktop profile has no `CLAUDE_CONFIG_DIR` of its own, so it is left out —
-/// unless it shares its label with a CLI account, which names the same account.
-fn activity_targets(
-    config: &Config,
-    entries: &[Entry],
-    cli_active: Option<&str>,
-) -> Vec<(usize, PathBuf)> {
-    let mut targets: Vec<(usize, PathBuf)> = Vec::new();
-    for (index, entry) in entries.iter().enumerate() {
-        if !is_claude_entry(entry) || entry.error.is_some() {
-            continue;
-        }
-        let Some(dir) = claude_config_dir(config, &entry.id, cli_active) else {
-            continue;
-        };
-        if !targets.iter().any(|(_, seen)| *seen == dir) {
-            targets.push((index, dir));
-        }
-    }
-    targets
-}
-
-/// The `CLAUDE_CONFIG_DIR` behind a Claude entry: the directory of the
-/// credentials its quota is fetched from, resolved exactly as the fetch
-/// resolves them — so an account that `account switch` moved into the default
-/// slot is read from `~/.claude`, where its sessions now live too.
-fn claude_config_dir(config: &Config, entry_id: &str, cli_active: Option<&str>) -> Option<PathBuf> {
-    let target = match entry_id.strip_prefix("anthropic@") {
-        Some(label) => {
-            config
-                .anthropic
-                .account_target_with(label, cli_active)
-                .ok()?
-                .0
-        }
-        None if entry_id == "anthropic" => config.anthropic.default_creds_target(),
-        None => return None,
-    };
-    target.config_dir()
-}
-
-fn scan_activity_targets(
-    targets: Vec<(usize, PathBuf)>,
-    probe: &impl ProcessProbe,
-) -> Vec<(usize, SessionActivity)> {
-    targets
-        .into_iter()
-        .map(|(index, dir)| (index, crate::context::activity::scan_dir(&dir, probe)))
-        .collect()
-}
-
-/// Give each entry with something happening its `activity` field and the
-/// matching row; an idle account gets neither.
-fn apply_session_activity(entries: &mut [Entry], scanned: Vec<(usize, SessionActivity)>) {
-    for (index, activity) in scanned {
-        let (Some(entry), Some(summary)) = (entries.get_mut(index), activity.summary()) else {
-            continue;
-        };
-        entry.activity = Some(activity);
-        entry.sections.push(ReportSection::Text {
-            label: ACTIVITY_LABEL.into(),
-            value: summary,
-            used_cents: None,
-            limit_cents: None,
-            percent: None,
-            severity: None,
-        });
-    }
-}
-
-/// Entry ids are `anthropic` or `anthropic@<label>` (a `[[custom]]` provider
-/// is always `custom:<id>`, so the prefix cannot be spoofed by one).
-fn is_claude_entry(entry: &Entry) -> bool {
-    entry.id == "anthropic" || entry.id.starts_with("anthropic@")
-}
-
-/// Project a context scan into report rows: a spacer, then one grouped metric
-/// per recent session carrying its health on the existing severity colours,
-/// and an overflow note when the scan found more sessions than are shown.
-fn context_session_sections(scan: &ContextScan) -> Vec<ReportSection> {
-    if scan.sessions.is_empty() {
-        return Vec::new();
-    }
-    let shown = scan.sessions.len().min(MAX_SESSION_ROWS);
-    let mut sections = Vec::with_capacity(shown + 2);
-    sections.push(ReportSection::Spacer);
-    sections.extend(scan.sessions[..shown].iter().map(session_section));
-    if scan.sessions.len() > shown {
-        sections.push(ReportSection::Text {
-            label: String::new(),
-            value: format!("… and {} more sessions", scan.sessions.len() - shown),
-            used_cents: None,
-            limit_cents: None,
-            percent: None,
-            severity: None,
-        });
-    }
-    sections
-}
-
-fn session_section(session: &ContextSession) -> ReportSection {
-    // Transcript titles are untrusted data; the context module already strips
-    // control characters, and the report sink strips the rest (bidi, size).
-    let label = crate::display::sanitize_untrusted_field(&session.display_name());
-    let model = session.model.as_deref().unwrap_or("unknown model");
-    let last_active = crate::format::local_time_hms(session.modified_at);
-    let (percent, value, detail) = match session.usage {
-        ContextUsage::Available {
-            input_tokens,
-            window_tokens: Some(window_tokens),
-            percent: Some(percent),
-        } => {
-            let pct = percent.min(100);
-            (
-                pct,
-                format!("{pct}%"),
-                format!(
-                    "{} / {} tokens · {model} · last active {last_active}",
-                    format_tokens(input_tokens),
-                    format_tokens(window_tokens)
-                ),
-            )
-        }
-        ContextUsage::Available { input_tokens, .. } => (
-            0,
-            format!("{} tokens", format_tokens(input_tokens)),
-            format!("window size is not configured · {model} · last active {last_active}"),
-        ),
-        ContextUsage::Compacted => (
-            0,
-            "compacted".into(),
-            format!(
-                "compacted · waiting for the next response · {model} · last active {last_active}"
-            ),
-        ),
-        ContextUsage::Unknown => (
-            0,
-            "unknown".into(),
-            format!("context usage unavailable · {model} · last active {last_active}"),
-        ),
-    };
-    ReportSection::Metric {
-        label,
-        percent,
-        value,
-        detail,
-        headline: "percent".into(),
-        // Same mapping the TUI's context detail uses, so a session at 90%
-        // reads as saturated in every surface that draws severity colours.
-        severity: crate::pango::severity_for(i32::from(percent))
-            .as_str()
-            .into(),
-        reset_at: None,
-        window_secs: None,
-        group: Some(SESSIONS_GROUP.into()),
-        regen: None,
-        percent_precise: None,
-        reading: None,
-        model_pool: false,
-    }
 }
 
 /// Process status after a complete document has been printed.
@@ -883,74 +238,27 @@ fn report_exit_code(entries: &[Entry]) -> i32 {
     i32::from(entries.is_empty())
 }
 
-/// Stable machine id shared by aggregate views and the macOS menu bar:
-/// `<vendor>@<label>` for named accounts, `custom:<id>` for a `[[custom]]`
-/// provider (which never has accounts). Also the entry half of the
-/// notification dedupe key.
+/// Stable machine id, also the entry half of the notification dedupe key:
+/// `<provider>@<label>` for named accounts, the bare slug for a default key.
 pub(crate) fn tab_id(tab: &TabId) -> String {
-    match &tab.source {
-        TabSource::Custom { id, .. } => format!("custom:{id}"),
-        TabSource::Builtin(vendor) => match &tab.account {
-            Some(account) => format!("{}@{account}", vendor.slug()),
-            None => vendor.slug().to_string(),
-        },
+    match &tab.account {
+        Some(account) => format!("{}@{account}", tab.vendor.slug()),
+        None => tab.vendor.slug().to_string(),
     }
 }
 
 fn tab_name(tab: &TabId) -> String {
-    match &tab.source {
-        TabSource::Builtin(vendor) => format_tab_name(tab, vendor.slug()),
-        TabSource::Custom { name, .. } => format_tab_name(tab, name),
-    }
+    format_tab_name(tab, tab.vendor.slug())
 }
 
 fn tab_display_name(tab: &TabId) -> String {
-    match &tab.source {
-        TabSource::Builtin(vendor) => format_tab_name(tab, vendor.display_name()),
-        TabSource::Custom { name, .. } => format_tab_name(tab, name),
-    }
+    format_tab_name(tab, tab.vendor.display_name())
 }
 
-/// The `{vendor_short}` code: the vendor's own for a built-in, the configured
-/// `short_name` for a custom provider.
-fn tab_short_name(tab: &TabId) -> String {
-    match &tab.source {
-        TabSource::Builtin(vendor) => vendor.short_name().to_string(),
-        TabSource::Custom { short_name, .. } => {
-            crate::display::sanitize_untrusted_field(short_name)
-        }
-    }
-}
-
-/// The bar glyph: the vendor's own for a built-in. A custom provider has no
-/// glyph of its own, so its `short_name` stands in, as Zai and Kimi's do.
-fn tab_icon(tab: &TabId) -> String {
-    match &tab.source {
-        TabSource::Builtin(vendor) => vendor.bar_icon().to_string(),
-        TabSource::Custom { short_name, .. } => {
-            crate::display::sanitize_untrusted_field(short_name)
-        }
-    }
-}
-
-/// The provider whose mark draws this entry. Built-in tabs carry everything
-/// needed to derive it; a custom tab's optional brand stays in `Config` rather
-/// than widening the public `TabSource` enum and is attached by
-/// `entry_from_state_with_config`.
-fn tab_brand(tab: &TabId) -> Option<String> {
-    match &tab.source {
-        TabSource::Builtin(vendor) => Some(vendor.slug().to_string()),
-        TabSource::Custom { .. } => None,
-    }
-}
-
-fn format_tab_name(tab: &TabId, vendor_name: &str) -> String {
+fn format_tab_name(tab: &TabId, provider_name: &str) -> String {
     let name = match &tab.account {
-        // Mark a Desktop-sourced account so a mixed CLI+Desktop setup is legible;
-        // for a Desktop-only user every Claude row simply reads "· <label> (desktop)".
-        Some(account) if tab.desktop => format!("{vendor_name} · {account} (desktop)"),
-        Some(account) => format!("{vendor_name} · {account}"),
-        None => vendor_name.to_string(),
+        Some(account) => format!("{provider_name} · {account}"),
+        None => provider_name.to_string(),
     };
     crate::display::sanitize_untrusted_field(&name)
 }
@@ -958,28 +266,21 @@ fn format_tab_name(tab: &TabId, vendor_name: &str) -> String {
 /// Resolve the `primary` the report should name to an id `entries` actually
 /// carries.
 ///
-/// `config.ui.primary` is a vendor slug, but with named accounts the entry
-/// ids are `vendor@account`, so the raw slug names an id no entry has —
-/// `primary: "anthropic"` next to `anthropic@claude-me`. The first entry of
-/// that vendor (the bare slug, or the first `{slug}@…` account) wins; a slug
-/// with no matching entry is kept as-is, because the config naming a
-/// disabled or absent vendor is information worth reporting, not something
-/// to paper over with a guess. `None` (unset) stays `None`.
+/// `config.ui.primary` is a provider slug, but with named accounts the entry
+/// ids are `provider@account`, so the raw slug names an id no entry has —
+/// `primary: "openrouter"` next to `openrouter@work`. The first entry of that
+/// provider (the bare slug, or the first `{slug}@…` account) wins; a slug with
+/// no matching entry is kept as-is, because the config naming a disabled or
+/// absent provider is information worth reporting, not something to paper over
+/// with a guess. `None` (unset) stays `None`.
 fn resolve_primary(primary: Option<&str>, entries: &[Entry]) -> Option<String> {
     primary.map(|slug| {
-        // The `@` suffix keeps a slug that is a prefix of another vendor's
-        // ("openai" vs "openrouter") from matching that vendor's accounts.
         entries
             .iter()
             .find(|entry| entry.id == slug || entry.id.starts_with(&format!("{slug}@")))
             .map(|entry| entry.id.clone())
             .unwrap_or_else(|| slug.to_string())
     })
-}
-
-#[cfg(test)]
-fn render_json_for_primary(entries: &[Entry], primary: Option<&str>) -> String {
-    render_json_document(entries, primary, None)
 }
 
 fn render_json_document(
@@ -996,16 +297,6 @@ fn render_json_document(
         value["overview_vendors"] = json!(order);
     }
     value.to_string()
-}
-
-/// The single-entry shape: the same rows, without a `primary` the caller
-/// did not ask about.
-fn render_json_entries(entries: &[Entry]) -> String {
-    json!({
-        "schema_version": USAGE_SCHEMA_VERSION,
-        "entries": json_rows(entries),
-    })
-    .to_string()
 }
 
 fn json_rows(entries: &[Entry]) -> Vec<serde_json::Value> {
@@ -1025,11 +316,6 @@ fn json_rows(entries: &[Entry]) -> Vec<serde_json::Value> {
                         severity,
                         reset_at,
                         window_secs,
-                        group,
-                        regen,
-                        percent_precise,
-                        reading,
-                        model_pool,
                     } => {
                         let mut metric = json!({
                             "label": label,
@@ -1044,27 +330,12 @@ fn json_rows(entries: &[Entry]) -> Vec<serde_json::Value> {
                         if let Some(secs) = window_secs {
                             metric["window_secs"] = json!(secs);
                         }
-                        if let Some(group) = group {
-                            metric["group"] = json!(group);
-                        }
-                        if let Some(regen) = regen {
-                            metric["regen"] = json!(regen);
-                        }
-                        if let Some(precise) = percent_precise {
-                            metric["percent_precise"] = json!(precise);
-                        }
-                        if let Some(reading) = reading {
-                            metric["reading"] = json!(reading);
-                        }
-                        if *model_pool {
-                            metric["model_pool"] = json!(true);
-                        }
                         Some(metric)
                     }
                     _ => None,
                 })
                 .collect::<Vec<_>>();
-            let mut row = json!({
+            json!({
                 "id": entry.id,
                 "name": entry.name,
                 "display_name": entry.display_name,
@@ -1075,22 +346,9 @@ fn json_rows(entries: &[Entry]) -> Vec<serde_json::Value> {
                 "error": entry.error,
                 "stale": entry.stale,
                 "fetched_at": entry.fetched_at,
-                "reset_credits": entry.reset_credits,
                 "metrics": metrics,
                 "sections": entry.sections,
-            });
-            // Optional additive fields are absent, not null, so older and
-            // newer producers keep the documented tolerant JSON contract.
-            if let Some(brand) = &entry.brand {
-                row["brand"] = json!(brand);
-            }
-            if let Some(activity) = &entry.activity {
-                row["activity"] = json!({
-                    "working": activity.working,
-                    "waiting": activity.waiting,
-                });
-            }
-            row
+            })
         })
         .collect()
 }
@@ -1151,7 +409,7 @@ fn render_text(entries: &[Entry]) -> String {
                         body.push_str(&format!("  {label}  {value}   {detail}\n"));
                     }
                 }
-                ReportSection::Text { label, value, .. } => {
+                ReportSection::Text { label, value } => {
                     if label.is_empty() {
                         body.push_str(&format!("  {}\n", value.trim_start()));
                     } else if value.is_empty() {
@@ -1179,2217 +437,181 @@ fn render_text(entries: &[Entry]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tui::app::ReadyTab;
-    use crate::usage::{
-        CursorCreditGrant, CursorSnapshot, DeepseekSnapshot, KimiSnapshot, KiroSnapshot,
-        OpenAiSnapshot, OpenAiSource, OpenRouterSnapshot, ResetCredit, ResetCredits,
-        SuperGrokPeriod, SuperGrokSnapshot, SyntheticSnapshot, UsageWindow, VendorSnapshot,
-    };
+    use crate::balance::DisplayPrefs;
+    use crate::provider::ReadyTab;
+    use crate::usage::{DeepseekSnapshot, OpenRouterSnapshot, VendorSnapshot};
     use crate::vendor::VendorId;
+    use chrono::TimeZone;
 
-    fn entry(name: &str, sections: Vec<ReportSection>) -> Entry {
-        Entry {
-            id: name.into(),
-            name: name.into(),
-            display_name: name.into(),
-            short_name: VendorId::Anthropic.short_name().into(),
-            icon: VendorId::Anthropic.bar_icon().into(),
-            brand: Some(VendorId::Anthropic.slug().into()),
-            plan: Some("Claude Max 20x".into()),
-            sections,
-            error: None,
-            stale: false,
-            fetched_at: None,
-            reset_credits: None,
-            activity: None,
-        }
+    fn now() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 5, 23, 12, 0, 0).unwrap()
     }
 
-    fn metric(label: &str, percent: u16, value: &str, detail: &str) -> ReportSection {
-        ReportSection::Metric {
-            label: label.into(),
-            percent,
-            value: value.into(),
-            detail: detail.into(),
-            headline: "percent".into(),
-            severity: "mid".into(),
-            reset_at: None,
-            window_secs: None,
-            group: None,
-            regen: None,
-            percent_precise: None,
-            reading: None,
-            model_pool: false,
-        }
-    }
-
-    fn antigravity_account(index: usize) -> crate::antigravity::statusline::AccountSession {
-        let hash = format!("{:012x}{:052x}", index + 1, index + 1);
-        crate::antigravity::statusline::AccountSession {
-            id_suffix: hash[..12].into(),
-            masked_email: "a***@example.com".to_string(),
-            updated_at: Utc::now(),
-            snapshot: crate::usage::AntigravitySnapshot {
-                plan: "Pro".into(),
-                account: hash,
-                source: crate::usage::AntigravitySource::Statusline,
-                session: None,
-                weekly: None,
-                third_party_session: None,
-                third_party_weekly: None,
-                model_pools: Vec::new(),
-            },
-        }
-    }
-
-    #[test]
-    fn keeps_single_default_target_without_active_accounts() {
-        let tabs = [TabId::vendor(VendorId::Antigravity)];
-        let targets = expand_antigravity_tabs(&tabs, &[]);
-        assert_eq!(targets.len(), 1);
-        assert_eq!(report_target_id(&targets[0]), "antigravity");
-    }
-
-    #[test]
-    fn replaces_default_target_with_two_three_and_five_accounts() {
-        let tabs = [TabId::vendor(VendorId::Antigravity)];
-        for count in [2, 3, 5] {
-            let accounts = (0..count).map(antigravity_account).collect::<Vec<_>>();
-            let targets = expand_antigravity_tabs(&tabs, &accounts);
-            assert_eq!(targets.len(), count);
-            assert!(
-                targets
-                    .iter()
-                    .all(|target| report_target_id(target).starts_with("antigravity@"))
-            );
-        }
-    }
-
-    #[test]
-    fn does_not_expand_when_antigravity_is_disabled() {
-        let tabs = [TabId::vendor(VendorId::Anthropic)];
-        let targets =
-            expand_antigravity_tabs(&tabs, &[antigravity_account(0), antigravity_account(1)]);
-        assert_eq!(targets.len(), 1);
-        assert_eq!(report_target_id(&targets[0]), "anthropic");
-    }
-
-    #[test]
-    fn report_filter_selects_only_the_requested_provider_and_account() {
-        let targets = vec![
-            ReportTarget::Tab(TabId::vendor(VendorId::Anthropic)),
-            ReportTarget::Tab(TabId::account_for(VendorId::Anthropic, "work")),
-            ReportTarget::Tab(TabId::account_for(VendorId::Openai, "work")),
-            ReportTarget::Tab(TabId {
-                source: TabSource::Custom {
-                    id: "local".into(),
-                    name: "Local".into(),
-                    short_name: "loc".into(),
-                },
-                account: None,
-                desktop: false,
-            }),
-        ];
-        let ids =
-            |selected: Vec<ReportTarget>| selected.iter().map(report_target_id).collect::<Vec<_>>();
-        assert_eq!(
-            ids(report_targets_for_filter(&targets, "anthropic", None)),
-            ["anthropic", "anthropic@work"]
-        );
-        assert_eq!(
-            ids(report_targets_for_filter(
-                &targets,
-                "anthropic",
-                Some("work")
-            )),
-            ["anthropic@work"]
-        );
-        assert_eq!(
-            ids(report_targets_for_filter(&targets, "custom:local", None)),
-            ["custom:local"]
-        );
-        assert!(report_targets_for_filter(&targets, "openai", Some("missing")).is_empty());
-    }
-
-    #[test]
-    fn named_target_uses_masked_display_name_and_hashed_id() {
-        let tab = TabId::vendor(VendorId::Antigravity);
-        let target = expand_antigravity_tabs(&[tab], &[antigravity_account(0)]).remove(0);
-        let ReportTarget::AntigravityAccount(tab, account) = &target else {
-            panic!("expected named Antigravity account target");
-        };
-        let entry = entry_from_antigravity_account(tab, account, Utc::now());
-        assert_eq!(entry.id, report_target_id(&target));
-        assert!(entry.id.starts_with("antigravity@"));
-        assert_eq!(entry.display_name, "Antigravity · a***@example.com");
-        assert_eq!(entry.fetched_at, Some(account.updated_at));
-        assert!(!entry.display_name.contains("account0"));
-    }
-
-    #[test]
-    fn usage_json_contains_one_entry_per_distinct_active_account() {
-        let tabs = [TabId::vendor(VendorId::Antigravity)];
-        let accounts = (0..3).map(antigravity_account).collect::<Vec<_>>();
-        let targets = expand_antigravity_tabs(&tabs, &accounts);
-        let entries = targets
-            .iter()
-            .map(|target| {
-                let ReportTarget::AntigravityAccount(tab, account) = target else {
-                    panic!("expected named account target");
-                };
-                entry_from_antigravity_account(tab, account, Utc::now())
-            })
-            .collect::<Vec<_>>();
-        let value: serde_json::Value =
-            serde_json::from_str(&render_json_entries(&entries)).unwrap();
-        assert_eq!(value["entries"].as_array().unwrap().len(), 3);
-    }
-
-    #[test]
-    fn usage_json_marks_old_but_active_antigravity_snapshot_stale() {
-        let tab = TabId::vendor(VendorId::Antigravity);
-        let mut account = antigravity_account(0);
-        account.updated_at = Utc::now() - chrono::Duration::minutes(16);
-        let entry = entry_from_antigravity_account(&tab, &account, Utc::now());
-        let value: serde_json::Value =
-            serde_json::from_str(&render_json_entries(&[entry])).unwrap();
-
-        assert_eq!(value["entries"].as_array().unwrap().len(), 1);
-        assert_eq!(value["entries"][0]["stale"], true);
-    }
-
-    #[test]
-    fn usage_json_never_contains_raw_email() {
-        let tab = TabId::vendor(VendorId::Antigravity);
-        let ReportTarget::AntigravityAccount(tab, account) =
-            expand_antigravity_tabs(&[tab], &[antigravity_account(0)]).remove(0)
-        else {
-            panic!("expected named account target");
-        };
-        let entry = entry_from_antigravity_account(&tab, &account, Utc::now());
-        let json = render_json_entries(&[entry]);
-        assert!(!json.contains("account0@example.com"));
-        assert!(json.contains("a***@example.com"));
-    }
-
-    /// #453: a per-model pool's row says so, in `sections` and in the
-    /// `metrics` view alike; a shared window carries no such field at all.
-    #[test]
-    fn usage_json_marks_only_the_model_pool_row() {
-        let tab = TabId::vendor(VendorId::Antigravity);
-        let mut account = antigravity_account(0);
-        let window = |utilization_pct, window_duration| crate::usage::UsageWindow {
-            utilization_pct,
-            resets_at: Some(Utc::now() + chrono::Duration::hours(2)),
-            window_duration,
-        };
-        let week = chrono::Duration::days(7);
-        account.snapshot.session = Some(window(55, chrono::Duration::hours(5)));
-        account.snapshot.weekly = Some(window(39, week));
-        account
-            .snapshot
-            .model_pools
-            .push(crate::usage::ModelPoolWindow {
-                name: "Gemini 4 Argon".into(),
-                window: window(100, week),
-            });
-        let entry = entry_from_antigravity_account(&tab, &account, Utc::now());
-        let value: serde_json::Value =
-            serde_json::from_str(&render_json_entries(&[entry])).unwrap();
-
-        let entry = &value["entries"][0];
-        let metrics: Vec<&serde_json::Value> = entry["sections"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|section| section["type"] == "metric")
-            .chain(entry["metrics"].as_array().unwrap())
-            .collect();
-        assert_eq!(metrics.len(), 6);
-        for metric in metrics {
-            let pool = metric["label"] == "Gemini 4 Argon";
-            assert_eq!(
-                metric.get("model_pool"),
-                pool.then_some(&serde_json::Value::Bool(true)),
-                "{metric}"
-            );
-        }
-    }
-
-    #[test]
-    fn collect_entry_json_resolves_statusline_account() {
-        let tab = TabId::vendor(VendorId::Antigravity);
-        let targets =
-            expand_antigravity_tabs(&[tab], &[antigravity_account(0), antigravity_account(1)]);
-        let id = report_target_id(&targets[1]);
-        let matching = report_targets_matching(&targets, &id);
-        assert_eq!(matching.len(), 1);
-        assert_eq!(report_target_id(&matching[0]), id);
-    }
-
-    #[test]
-    fn zero_valid_snapshots_runs_existing_antigravity_fallback() {
-        let tabs = [TabId::vendor(VendorId::Antigravity)];
-        let targets = expand_antigravity_tabs(&tabs, &[]);
-        assert!(matches!(targets.as_slice(), [ReportTarget::Tab(_)]));
-    }
-
-    #[test]
-    fn accounts_get_a_stable_id_and_a_readable_name() {
-        let account = TabId::account("gmail");
-        assert_eq!(tab_id(&account), "anthropic@gmail");
-        assert_eq!(tab_name(&account), "anthropic · gmail");
-        assert_eq!(tab_display_name(&account), "Claude · gmail");
-
-        let plain = TabId::vendor(VendorId::Cursor);
-        assert_eq!(tab_id(&plain), "cursor");
-        assert_eq!(tab_name(&plain), "cursor");
-        assert_eq!(tab_display_name(&plain), "Cursor");
-
-        let openrouter = TabId::account_for(VendorId::Openrouter, "work");
-        assert_eq!(tab_id(&openrouter), "openrouter@work");
-        assert_eq!(tab_name(&openrouter), "openrouter · work");
-        assert_eq!(tab_display_name(&openrouter), "OpenRouter · work");
-    }
-
-    /// The Omarchy bar can be set to draw the provider tag and nothing else,
-    /// so every entry — a failed one included — has to carry a code, and every
-    /// account of one vendor has to carry that vendor's code rather than a
-    /// per-account one.
-    #[test]
-    fn every_entry_carries_its_vendor_short_code() {
-        let now = Utc::now();
-        let failed = TabState::error("not signed in");
-
-        let account = entry_from_state(&TabId::account("gmail"), &failed, now);
-        assert_eq!(account.short_name, "cld");
-        let other_account = entry_from_state(&TabId::account("work"), &failed, now);
-        assert_eq!(other_account.short_name, account.short_name);
-
-        let cursor = entry_from_state(&TabId::vendor(VendorId::Cursor), &failed, now);
-        assert_eq!(cursor.short_name, "cur");
-        assert_eq!(cursor.icon, VendorId::Cursor.bar_icon());
-        // A built-in vendor is its own brand, so a frontend never has to map
-        // the entry id back to a provider to pick the mark.
-        assert_eq!(cursor.brand.as_deref(), Some(VendorId::Cursor.slug()));
-
-        let rendered = render_json_for_primary(&[cursor], None);
-        let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
-        assert_eq!(value["entries"][0]["short_name"], "cur");
-        assert_eq!(value["entries"][0]["icon"], VendorId::Cursor.bar_icon());
-        assert_eq!(value["entries"][0]["brand"], VendorId::Cursor.slug());
-    }
-
-    #[test]
-    fn every_metric_reports_its_quota_and_its_reset() {
-        let text = render_text(&[entry(
-            "anthropic · gmail",
-            vec![
-                metric("Session (5h)", 29, "29%", "Resets in 0h 50m"),
-                metric("Weekly (7d)", 32, "32%", "Resets in 4d 2h"),
-            ],
-        )]);
-
-        assert!(
-            text.contains("anthropic · gmail   Claude Max 20x"),
-            "{text}"
-        );
-        assert!(text.contains("29%   Resets in 0h 50m"), "{text}");
-        assert!(text.contains("32%   Resets in 4d 2h"), "{text}");
-    }
-
-    /// Labels are padded to one width across the whole report, so the columns
-    /// still line up when a later entry has a longer label than the first.
-    #[test]
-    fn value_columns_align_across_entries() {
-        let text = render_text(&[
-            entry("a", vec![metric("S", 1, "1%", "")]),
-            entry("b", vec![metric("A very long label", 2, "2%", "")]),
-        ]);
-        let columns: Vec<usize> = text
-            .lines()
-            .filter(|line| line.starts_with("  ") && line.contains('%'))
-            .map(|line| line.find('%').unwrap())
-            .collect();
-        assert_eq!(columns.len(), 2);
-        assert_eq!(columns[0], columns[1], "{text}");
-    }
-
-    /// The same alignment, but with a label whose glyphs are two columns wide.
-    /// `format!("{label:width$}")` pads by character count, so a CJK label used
-    /// to leave the value column short by one space per ideograph. Note the
-    /// column is measured in display width, not byte or char offset — `find`
-    /// returns a byte index, which is itself three per ideograph here.
-    #[test]
-    fn value_columns_align_when_a_label_is_double_width() {
-        let text = render_text(&[
-            entry("a", vec![metric("セッション", 1, "1%", "")]),
-            entry("b", vec![metric("Weekly", 2, "2%", "")]),
-        ]);
-        let columns: Vec<usize> = text
-            .lines()
-            .filter(|line| line.starts_with("  ") && line.contains('%'))
-            .map(|line| {
-                let byte = line.find('%').unwrap();
-                crate::display::text_width(&line[..byte])
-            })
-            .collect();
-        assert_eq!(columns.len(), 2);
-        assert_eq!(columns[0], columns[1], "{text}");
-    }
-
-    /// One dead vendor must not hide the others — it reports inline and the
-    /// rest still print.
-    #[test]
-    fn a_failing_entry_is_reported_without_dropping_the_rest() {
-        let mut broken = entry("openai", Vec::new());
-        broken.error = Some("credentials error: not signed in".into());
-        let text = render_text(&[broken, entry("cursor", vec![metric("Auto", 5, "5%", "")])]);
-
-        assert!(
-            text.contains("! credentials error: not signed in"),
-            "{text}"
-        );
-        assert!(text.contains("cursor"), "{text}");
-        assert!(text.contains("5%"), "{text}");
-    }
-
-    #[test]
-    fn json_carries_the_percentage_as_a_number() {
-        let rendered = render_json_for_primary(
-            &[entry(
-                "anthropic · gmail",
-                vec![metric("Session (5h)", 29, "29%", "Resets in 0h 50m")],
-            )],
-            None,
-        );
-        let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
-        let first = &value["entries"][0];
-        assert_eq!(first["plan"], "Claude Max 20x");
-        assert_eq!(first["display_name"], "anthropic · gmail");
-        assert_eq!(first["short_name"], "cld");
-        assert_eq!(first["metrics"][0]["percent"], 29);
-        assert_eq!(first["metrics"][0]["detail"], "Resets in 0h 50m");
-        assert!(first["error"].is_null());
-        assert_eq!(first["status"], "ready");
-        assert_eq!(first["stale"], false);
-        assert!(first["fetched_at"].is_null());
-        assert_eq!(first["metrics"][0]["severity"], "mid");
-        assert!(first["metrics"][0]["reset_at"].is_null());
-        assert!(value["primary"].is_null());
-    }
-
-    #[test]
-    fn json_carries_the_configured_primary_without_reordering_entries() {
-        let rendered = render_json_for_primary(
-            &[entry("anthropic", Vec::new()), entry("openai", Vec::new())],
-            Some("openai"),
-        );
-        let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
-        assert_eq!(value["primary"], "openai");
-        assert_eq!(value["entries"][0]["id"], "anthropic");
-        assert_eq!(value["entries"][1]["id"], "openai");
-        assert!(value.get("overview_vendors").is_none());
-    }
-
-    #[test]
-    fn json_carries_overview_vendors_only_when_configured() {
-        let rendered = render_json_document(
-            &[entry("anthropic", Vec::new())],
-            None,
-            Some(&["openai", "anthropic"]),
-        );
-        let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
-        assert_eq!(value["overview_vendors"], json!(["openai", "anthropic"]));
-    }
-
-    /// #228: `config.ui.primary` is a vendor slug, but entry ids carry
-    /// account labels for named accounts, so the reported `primary` is
-    /// resolved to an id one of the entries actually has.
-    #[test]
-    fn primary_resolves_to_an_entry_id_the_report_actually_carries() {
-        // Bare entries: the slug already is an entry id, so it stays.
-        let bare = vec![entry("anthropic", Vec::new()), entry("openai", Vec::new())];
-        assert_eq!(
-            resolve_primary(Some("anthropic"), &bare),
-            Some("anthropic".into())
-        );
-
-        // Named accounts only: the first account's entry id is reported, so
-        // `primary` names an id `entries` carries.
-        let accounts = vec![
-            entry("anthropic@claude-me", Vec::new()),
-            entry("anthropic@claude-b3", Vec::new()),
-        ];
-        assert_eq!(
-            resolve_primary(Some("anthropic"), &accounts),
-            Some("anthropic@claude-me".into())
-        );
-
-        // A bare entry wins over accounts of the same vendor: it is the
-        // first entry the slug matches.
-        let mixed = vec![
-            entry("anthropic", Vec::new()),
-            entry("anthropic@claude-me", Vec::new()),
-        ];
-        assert_eq!(
-            resolve_primary(Some("anthropic"), &mixed),
-            Some("anthropic".into())
-        );
-
-        // A slug that prefixes another vendor's name must not match that
-        // vendor's entries: the `@` delimiter is what keeps this exact.
-        let openrouter = vec![entry("openrouter@work", Vec::new())];
-        assert_eq!(
-            resolve_primary(Some("openai"), &openrouter),
-            Some("openai".into())
-        );
-
-        // No matching entry: the config names a disabled or absent vendor,
-        // which is worth reporting as-is rather than papering over.
-        assert_eq!(
-            resolve_primary(Some("cursor"), &accounts),
-            Some("cursor".into())
-        );
-
-        // Unset stays unset.
-        assert_eq!(resolve_primary(None, &accounts), None);
-    }
-
-    /// The same resolution as seen through the rendered JSON: consumers may
-    /// now treat `primary` as an entry id present in `entries`.
-    #[test]
-    fn json_primary_resolves_to_the_first_named_account_entry() {
-        let rendered = render_json_for_primary(
-            &[
-                entry("anthropic@claude-me", Vec::new()),
-                entry("anthropic@claude-b3", Vec::new()),
-            ],
-            Some("anthropic"),
-        );
-        let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
-        assert_eq!(value["primary"], "anthropic@claude-me");
-        let ids: Vec<&str> = value["entries"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|row| row["id"].as_str().unwrap())
-            .collect();
-        assert!(ids.contains(&value["primary"].as_str().unwrap()));
-
-        // The honest fallback: a primary naming a vendor with no entries
-        // keeps the slug instead of picking some other entry.
-        let unmatched =
-            render_json_for_primary(&[entry("anthropic@claude-me", Vec::new())], Some("cursor"));
-        let value: serde_json::Value = serde_json::from_str(&unmatched).unwrap();
-        assert_eq!(value["primary"], "cursor");
-        assert_eq!(value["entries"][0]["id"], "anthropic@claude-me");
-    }
-
-    #[test]
-    fn every_json_report_declares_its_schema_version() {
-        let aggregate: serde_json::Value = serde_json::from_str(&render_json_for_primary(
-            &[entry("anthropic", Vec::new())],
-            Some("anthropic"),
-        ))
-        .unwrap();
-        assert_eq!(aggregate["schema_version"], 1);
-
-        let single: serde_json::Value =
-            serde_json::from_str(&render_json_entries(&[entry("anthropic", Vec::new())])).unwrap();
-        assert_eq!(single["schema_version"], 1);
-    }
-
-    #[test]
-    fn json_exposes_absolute_resets_and_cache_freshness_additively() {
-        let fetched_at = Utc::now() - chrono::Duration::minutes(3);
-        let reset_at = Utc::now() + chrono::Duration::days(1);
-        let state = TabState::Ready(Box::new(ReadyTab {
-            snapshot: VendorSnapshot::Kiro(KiroSnapshot {
-                plan: "KIRO POWER".into(),
-                used: 4_000.0,
-                limit: 10_000.0,
-                reset_at: Some(reset_at),
-            }),
-            stale: true,
-            last_error: None,
-            fetched_at: Some(fetched_at),
-            display: Default::default(),
-            monthly_cycle_day: None,
-        }));
-        let projected = entry_from_state(&TabId::vendor(VendorId::Kiro), &state, Utc::now());
-        let rendered = render_json_for_primary(&[projected], None);
-        let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
-        let first = &value["entries"][0];
-
-        assert_eq!(first["stale"], true);
-        let fetched_rfc3339 = fetched_at.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true);
-        let reset_rfc3339 = reset_at.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true);
-        assert_eq!(first["fetched_at"], fetched_rfc3339);
-        assert_eq!(first["metrics"][0]["reset_at"], reset_rfc3339);
-        assert_eq!(first["sections"][1]["reset_at"], reset_rfc3339);
-        assert_eq!(first["metrics"][0]["severity"], "low");
-        // Kiro states a reset but not how long its window is; a frontend
-        // must not be handed a length to pace against.
-        assert!(first["metrics"][0]["window_secs"].is_null());
-        assert!(first["sections"][1].get("window_secs").is_none());
-    }
-
-    #[test]
-    fn non_positive_cycle_omits_window_secs_from_report() {
-        let fetched_at = Utc::now() - chrono::Duration::minutes(1);
-        let reset_at = Utc::now() + chrono::Duration::days(14);
-        for duration in [chrono::Duration::zero(), chrono::Duration::seconds(-1)] {
-            let state = TabState::Ready(Box::new(ReadyTab {
-                snapshot: VendorSnapshot::Synthetic(SyntheticSnapshot {
-                    weekly: UsageWindow {
-                        utilization_pct: 35,
-                        resets_at: Some(reset_at),
-                        window_duration: duration,
-                    },
-                    plan: None,
-                    credits: None,
-                    next_regen_percent: None,
-                    utilization_precise: 35.0,
-                }),
-                stale: false,
-                last_error: None,
-                fetched_at: Some(fetched_at),
-                display: Default::default(),
-                monthly_cycle_day: None,
-            }));
-            let projected =
-                entry_from_state(&TabId::vendor(VendorId::Synthetic), &state, Utc::now());
-            let rendered = render_json_for_primary(&[projected], None);
-            let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
-            let first = &value["entries"][0];
-
-            assert!(first["metrics"][0]["window_secs"].is_null());
-            assert!(first["sections"][1].get("window_secs").is_none());
-        }
-    }
-
-    #[test]
-    fn synthetic_weekly_regen_reaches_the_report_countdown() {
-        let fetched_at = Utc::now() - chrono::Duration::minutes(1);
-        let reset_at = Utc::now() + chrono::Duration::hours(3);
-        let state = TabState::Ready(Box::new(ReadyTab {
-            snapshot: VendorSnapshot::Synthetic(SyntheticSnapshot {
-                weekly: UsageWindow {
-                    utilization_pct: 30,
-                    resets_at: Some(reset_at),
-                    window_duration: chrono::Duration::zero(),
-                },
-                plan: Some("Standard".to_string()),
-                credits: None,
-                next_regen_percent: Some(2.0),
-                utilization_precise: 30.0,
-            }),
+    fn ready(snapshot: VendorSnapshot) -> TabState {
+        TabState::Ready(Box::new(ReadyTab {
+            snapshot,
             stale: false,
             last_error: None,
-            fetched_at: Some(fetched_at),
-            display: Default::default(),
+            fetched_at: Some(now() - chrono::Duration::seconds(20)),
+            display: DisplayPrefs::default(),
             monthly_cycle_day: None,
-        }));
-        let projected = entry_from_state(&TabId::vendor(VendorId::Synthetic), &state, Utc::now());
-        let rendered = render_json_for_primary(&[projected], None);
-        let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
-        let first = &value["entries"][0];
-
-        // The refill amount rides on the metric so a frontend countdown can
-        // read "Regenerates 2% in …", and the static detail already uses that
-        // wording for consumers that do not recompose the line live.
-        assert_eq!(first["metrics"][0]["regen"], "2%");
-        assert_eq!(first["sections"][1]["regen"], "2%");
-        // The printed figure keeps the API's decimal precision; the meter
-        // stays on the rounded integer.
-        assert_eq!(first["metrics"][0]["percent_precise"], 30.0);
-        assert_eq!(first["metrics"][0]["value"], "30%");
-        // A refilling budget reads as what's left, whatever the global
-        // reading; other providers' metrics carry no reading at all.
-        assert_eq!(first["metrics"][0]["reading"], "left");
-        assert_eq!(first["sections"][1]["reading"], "left");
-        // The configured plan tier label names the entry like other
-        // providers' plans do.
-        assert_eq!(first["plan"], "Standard");
-        let detail = first["metrics"][0]["detail"].as_str().unwrap();
-        assert!(detail.starts_with("Regenerates 2% in "), "{detail}");
-        // The standalone next-regen row is gone: the countdown carries it.
-        let labels: Vec<&str> = first["sections"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|s| s.get("label").and_then(|l| l.as_str()))
-            .collect();
-        assert!(!labels.contains(&"Next regen"), "{labels:?}");
+        }))
     }
 
-    // --- #255: Claude CLI sessions as grouped report rows ----------------------
-    fn context_session(id: &str, usage: ContextUsage) -> ContextSession {
-        ContextSession {
-            session_id: id.into(),
-            title: Some(format!("title {id}")),
-            project: "project".into(),
-            model: Some("claude-test".into()),
-            modified_at: "2026-09-25T12:34:56Z".parse().unwrap(),
-            usage,
-        }
+    fn openrouter() -> VendorSnapshot {
+        VendorSnapshot::Openrouter(OpenRouterSnapshot {
+            label: "OR".into(),
+            total_credits: 100.0,
+            total_usage: 25.0,
+            usage_daily: 1.0,
+            usage_weekly: 5.0,
+            usage_monthly: 25.0,
+            is_free_tier: false,
+            limit: None,
+            limit_remaining: None,
+            recent_models: Vec::new(),
+        })
     }
 
-    fn context_scan(sessions: Vec<ContextSession>) -> ContextScan {
-        let count = sessions.len();
-        ContextScan {
-            sessions,
-            discovered: count,
-            skipped: 0,
-            walk_capped: false,
-        }
+    fn deepseek() -> VendorSnapshot {
+        VendorSnapshot::Deepseek(DeepseekSnapshot {
+            is_available: true,
+            balance: 12.5,
+            granted: 2.5,
+            topped_up: 10.0,
+            currency: "USD".into(),
+        })
     }
 
-    fn enabled_context_config() -> Config {
-        Config {
-            context: crate::config::ContextConfig {
-                enabled: true,
-                ..Default::default()
-            },
-            ..Default::default()
-        }
-    }
-
-    /// Sessions project as `"Sessions"`-grouped metric rows whose severity is
-    /// the existing percent mapping — a 90% context reads as saturated in the
-    /// same colours every quota row uses — while compacted/unknown sessions
-    /// keep the TUI overlay's honest non-numeric labels instead of a fabricated
-    /// percentage.
-    #[test]
-    fn sessions_project_as_grouped_rows_with_health() {
-        let modified_at: chrono::DateTime<Utc> = "2026-09-25T12:34:56Z".parse().unwrap();
-        let scan = context_scan(vec![
-            context_session(
-                "saturated",
-                ContextUsage::Available {
-                    input_tokens: 180_000,
-                    window_tokens: Some(200_000),
-                    percent: Some(90),
-                },
-            ),
-            context_session(
-                "open-window",
-                ContextUsage::Available {
-                    input_tokens: 45_120,
-                    window_tokens: None,
-                    percent: None,
-                },
-            ),
-            context_session("compacted", ContextUsage::Compacted),
-            context_session("unknown", ContextUsage::Unknown),
-        ]);
-
-        let sections = session_sections_for(&enabled_context_config(), Some(&scan));
-        assert!(matches!(sections.first(), Some(ReportSection::Spacer)));
-
-        let metric = |id: &str| {
-            sections
-                .iter()
-                .find(|section| {
-                    matches!(
-                        section,
-                        ReportSection::Metric { label, .. } if *label == format!("title {id}")
-                    )
-                })
-                .unwrap_or_else(|| panic!("no session row for {id}: {sections:?}"))
-        };
-
-        let ReportSection::Metric {
-            percent,
-            value,
-            detail,
-            severity,
-            group,
-            headline,
-            ..
-        } = metric("saturated")
-        else {
-            unreachable!();
-        };
-        assert_eq!(*percent, 90);
-        assert_eq!(value, "90%");
-        assert_eq!(*severity, "critical");
-        assert_eq!(group.as_deref(), Some("Sessions"));
-        assert_eq!(headline, "percent");
-        assert!(detail.contains("180,000 / 200,000 tokens"), "{detail}");
-        assert!(detail.contains("claude-test"), "{detail}");
-        assert!(
-            detail.contains(&crate::format::local_time_hms(modified_at)),
-            "{detail}"
-        );
-
-        let ReportSection::Metric { percent, value, .. } = metric("open-window") else {
-            unreachable!();
-        };
-        assert_eq!(*percent, 0);
-        assert_eq!(value, "45,120 tokens");
-
-        let ReportSection::Metric { value, .. } = metric("compacted") else {
-            unreachable!();
-        };
-        assert_eq!(value, "compacted");
-
-        let ReportSection::Metric { value, .. } = metric("unknown") else {
-            unreachable!();
-        };
-        assert_eq!(value, "unknown");
-    }
-
-    /// The row cap keeps one provider's card readable and says so: the scan is
-    /// bounded at 100 sessions, but only the first 8 become rows, with an
-    /// overflow note instead of a silent cut.
-    #[test]
-    fn session_rows_are_capped_with_an_overflow_note() {
-        let sessions: Vec<_> = (0..(MAX_SESSION_ROWS + 3))
-            .map(|i| {
-                context_session(
-                    &format!("s{i}"),
-                    ContextUsage::Available {
-                        input_tokens: 1,
-                        window_tokens: Some(100),
-                        percent: Some(1),
-                    },
-                )
-            })
-            .collect();
-        let scan = context_scan(sessions);
-
-        let sections = session_sections_for(&enabled_context_config(), Some(&scan));
-        let rows = sections
-            .iter()
-            .filter(|section| matches!(section, ReportSection::Metric { .. }))
-            .count();
-        assert_eq!(rows, MAX_SESSION_ROWS);
-        assert!(matches!(
-            sections.last(),
-            Some(ReportSection::Text { value, .. }) if value == "… and 3 more sessions"
-        ));
-    }
-
-    /// The monitor is opt-in: a disabled `[context]` never reads the
-    /// transcript directory and never adds a row, and an enabled-but-failed
-    /// scan adds nothing rather than failing the report.
-    #[test]
-    fn a_disabled_context_monitor_adds_no_session_rows() {
-        let scan = context_scan(vec![context_session("one", ContextUsage::Unknown)]);
-
-        let disabled = Config::default();
-        assert!(!disabled.context.enabled);
-        assert!(session_sections_for(&disabled, Some(&scan)).is_empty());
-
-        assert!(session_sections_for(&enabled_context_config(), None).is_empty());
-        assert!(
-            session_sections_for(&enabled_context_config(), Some(&context_scan(Vec::new())))
-                .is_empty()
-        );
-    }
-
-    /// Sessions are machine-local, so they land on the first *ready* Claude
-    /// entry exactly once — never on another vendor, never on every Claude
-    /// account, and never on an errored entry whose sections the text report
-    /// does not print.
-    #[test]
-    fn sessions_attach_to_the_first_ready_claude_entry_only() {
-        let mut failed = entry("anthropic", Vec::new());
-        failed.error = Some("not signed in".into());
-        let mut entries = vec![
-            entry("openai", vec![metric("Weekly", 5, "5%", "")]),
-            failed,
-            entry("anthropic@gmail", vec![metric("Weekly", 5, "5%", "")]),
-            entry("anthropic@work", vec![metric("Weekly", 5, "5%", "")]),
-        ];
-
-        let sections = session_sections_for(
-            &enabled_context_config(),
-            Some(&context_scan(vec![context_session(
-                "one",
-                ContextUsage::Unknown,
-            )])),
-        );
-        let before: Vec<usize> = entries.iter().map(|e| e.sections.len()).collect();
-        attach_session_sections(&mut entries, sections);
-
-        // The errored default entry is skipped; the first ready Claude entry
-        // (the gmail account) gains the rows, and every other entry is
-        // byte-for-byte where it was.
-        assert_eq!(entries[0].sections.len(), before[0]);
-        assert_eq!(entries[1].sections.len(), before[1]);
-        assert!(entries[2].sections.len() > before[2]);
-        assert_eq!(
-            entries[2].sections.len() - before[2],
-            2,
-            "spacer + one session row"
-        );
-        assert_eq!(entries[3].sections.len(), before[3]);
-        assert!(entries[2].sections.iter().any(|section| matches!(section,
-                ReportSection::Metric { label, group, .. }
-                    if label == "title one" && group.as_deref() == Some("Sessions"))));
-    }
-
-    /// The session rows reach both JSON views — the ordered `sections` and the
-    /// `metrics` convenience — carrying the `"Sessions"` group, so a frontend
-    /// that renders groups (#213/#230) draws them under one heading.
-    #[test]
-    fn json_carries_session_rows_in_both_views() {
-        let mut claude = entry("anthropic", vec![metric("Session (5h)", 29, "29%", "")]);
-        let sections = session_sections_for(
-            &enabled_context_config(),
-            Some(&context_scan(vec![context_session(
-                "one",
-                ContextUsage::Available {
-                    input_tokens: 180_000,
-                    window_tokens: Some(200_000),
-                    percent: Some(90),
-                },
-            )])),
-        );
-        claude.sections.extend(sections);
-        let entries = [claude];
-
-        // The human-readable report prints the same rows, so a CLI consumer
-        // sees the sessions too.
-        let text = render_text(&entries);
-        assert!(text.contains("title one"), "{text}");
-        assert!(text.contains("90%"), "{text}");
-
-        let value: serde_json::Value =
-            serde_json::from_str(&render_json_for_primary(&entries, None)).unwrap();
-        let first = &value["entries"][0];
-        let session_section = first["sections"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|section| section["group"] == "Sessions")
-            .expect("a session section");
-        assert_eq!(session_section["label"], "title one");
-        assert_eq!(session_section["percent"], 90);
-        assert_eq!(session_section["severity"], "critical");
-        assert!(session_section["reset_at"].is_null());
-        assert!(session_section.get("window_secs").is_none());
-
-        let session_metric = first["metrics"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|metric| metric["group"] == "Sessions")
-            .expect("a session metric");
-        assert_eq!(session_metric["label"], "title one");
-        assert_eq!(session_metric["severity"], "critical");
-    }
-
-    /// Grouped sub-rows (SuperGrok's product slices) carry their group in both
-    /// the ordered `sections` and the `metrics` convenience view, and the field
-    /// is omitted (not `null`) for metrics that stand on their own — including
-    /// the overall meter they break down.
-    #[test]
-    fn json_carries_the_group_only_for_grouped_slices() {
-        use crate::usage::{ResetCredits, SuperGrokPeriod, SuperGrokProduct, SuperGrokSnapshot};
-
-        let state = TabState::Ready(Box::new(ReadyTab {
-            snapshot: VendorSnapshot::SuperGrok(SuperGrokSnapshot {
-                plan: "SuperGrok Heavy".into(),
-                account: "scope".into(),
-                weekly_pct: 97,
-                period: SuperGrokPeriod::Weekly,
-                reset_at: Some(Utc::now() + chrono::Duration::days(3)),
-                prepaid_balance: None,
-                on_demand_used_cents: None,
-                on_demand_cap_cents: None,
-                reset_credits: ResetCredits::default(),
-                products: vec![SuperGrokProduct {
-                    label: "Grok Build".into(),
-                    percent: 94,
-                }],
-            }),
-            stale: false,
-            last_error: None,
-            fetched_at: None,
-            display: Default::default(),
-            monthly_cycle_day: None,
-        }));
-        let projected = entry_from_state(&TabId::vendor(VendorId::Supergrok), &state, Utc::now());
-        let rendered = render_json_for_primary(&[projected], None);
-        let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
-        let first = &value["entries"][0];
-
-        // sections: [spacer, overall, product slice] — the overall meter the
-        // slices break down carries no group; the slice does, in both views.
-        assert!(first["sections"][1].get("group").is_none());
-        assert_eq!(first["sections"][2]["group"], "Breakdown");
-        assert!(first["metrics"][0].get("group").is_none());
-        assert_eq!(first["metrics"][1]["group"], "Breakdown");
+    fn document(entries: &[Entry], primary: Option<&str>) -> serde_json::Value {
+        serde_json::from_str(&render_json_document(entries, primary, Some(&["deepseek"]))).unwrap()
     }
 
     #[test]
-    fn json_exposes_banked_reset_expiries_without_removing_the_text_block() {
-        let expiry: DateTime<Utc> = "2026-09-20T23:58:00Z".parse().unwrap();
-        let state = TabState::Ready(Box::new(ReadyTab {
-            snapshot: VendorSnapshot::Openai(OpenAiSnapshot {
-                plan: "ChatGPT Pro".into(),
-                session: None,
-                weekly: None,
-                code_review: None,
-                additional_limits: Vec::new(),
-                unavailable_models: Vec::new(),
-                credits: None,
-                reset_credits: Some(ResetCredits {
-                    available: 2,
-                    credits: vec![ResetCredit {
-                        title: Some("Full reset".into()),
-                        expires_at: Some(expiry),
-                    }],
-                }),
-                source: OpenAiSource::CodexOauth,
-            }),
-            stale: false,
-            last_error: None,
-            fetched_at: None,
-            display: Default::default(),
-            monthly_cycle_day: None,
-        }));
-        let projected = entry_from_state(&TabId::vendor(VendorId::Openai), &state, Utc::now());
-        let value: serde_json::Value =
-            serde_json::from_str(&render_json_for_primary(&[projected], None)).unwrap();
-        let entry = &value["entries"][0];
-
-        assert_eq!(entry["reset_credits"]["available"], 2);
-        assert_eq!(entry["reset_credits"]["credits"][0]["title"], "Full reset");
-        assert_eq!(
-            entry["reset_credits"]["credits"][0]["expires_at"],
-            expiry.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)
-        );
-        assert!(
-            entry["sections"].as_array().unwrap().iter().any(|section| {
-                section["type"] == "block" && section["label"] == "Reset credits"
-            })
-        );
-    }
-
-    /// A Codex account that states it holds no banked resets reports
-    /// `{"available": 0}` and a "None available" block, so a frontend can tell
-    /// it from a response that never mentioned resets (`null`, no block).
-    #[test]
-    fn json_tells_a_stated_zero_from_an_absent_reset_block() {
-        let entry_for = |reset_credits: Option<ResetCredits>| {
-            let state = TabState::Ready(Box::new(ReadyTab {
-                snapshot: VendorSnapshot::Openai(OpenAiSnapshot {
-                    plan: "ChatGPT Pro".into(),
-                    session: None,
-                    weekly: None,
-                    code_review: None,
-                    additional_limits: Vec::new(),
-                    unavailable_models: Vec::new(),
-                    credits: None,
-                    reset_credits,
-                    source: OpenAiSource::CodexOauth,
-                }),
-                stale: false,
-                last_error: None,
-                fetched_at: None,
-                display: Default::default(),
-                monthly_cycle_day: None,
-            }));
-            let projected = entry_from_state(&TabId::vendor(VendorId::Openai), &state, Utc::now());
-            let value: serde_json::Value =
-                serde_json::from_str(&render_json_for_primary(&[projected], None)).unwrap();
-            value["entries"][0].clone()
-        };
-        let reset_block = |entry: &serde_json::Value| {
-            entry["sections"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|section| section["type"] == "block" && section["label"] == "Reset credits")
-                .cloned()
-        };
-
-        let zero = entry_for(Some(ResetCredits::default()));
-        assert_eq!(zero["reset_credits"]["available"], 0);
-        assert_eq!(zero["reset_credits"]["credits"], serde_json::json!([]));
-        assert_eq!(
-            reset_block(&zero).unwrap()["body"],
-            serde_json::json!(["None available"])
-        );
-
-        let absent = entry_for(None);
-        assert!(absent["reset_credits"].is_null());
-        assert!(reset_block(&absent).is_none());
-    }
-
-    /// The sidebar reads `reset_credits` off the entry, so Claude's grant has
-    /// to arrive through the same field Codex and SuperGrok already use —
-    /// not a Claude-shaped one a frontend would have to learn.
-    #[test]
-    fn json_exposes_claude_reset_credit_expiries() {
-        let expiry: DateTime<Utc> = "2026-10-22T16:00:00Z".parse().unwrap();
-        let state = TabState::Ready(Box::new(ReadyTab {
-            snapshot: VendorSnapshot::Anthropic(crate::usage::AnthropicSnapshot {
-                plan: "Max 20x".into(),
-                session: crate::usage::UsageWindow {
-                    utilization_pct: 2,
-                    resets_at: None,
-                    window_duration: chrono::Duration::hours(5),
-                },
-                weekly: crate::usage::UsageWindow {
-                    utilization_pct: 63,
-                    resets_at: None,
-                    window_duration: chrono::Duration::days(7),
-                },
-                sonnet: None,
-                scoped: Vec::new(),
-                extra: None,
-                reset_credits: ResetCredits {
-                    available: 1,
-                    credits: vec![ResetCredit {
-                        title: Some("Opus 5.5 launch reset".into()),
-                        expires_at: Some(expiry),
-                    }],
-                },
-                cloud_credits: None,
-                usage_credits: None,
-            }),
-            stale: false,
-            last_error: None,
-            fetched_at: None,
-            display: Default::default(),
-            monthly_cycle_day: None,
-        }));
-        let projected = entry_from_state(&TabId::vendor(VendorId::Anthropic), &state, Utc::now());
-        let value: serde_json::Value =
-            serde_json::from_str(&render_json_for_primary(&[projected], None)).unwrap();
-        let entry = &value["entries"][0];
-
-        assert_eq!(entry["reset_credits"]["available"], 1);
-        assert_eq!(
-            entry["reset_credits"]["credits"][0]["title"],
-            "Opus 5.5 launch reset"
-        );
-        assert_eq!(
-            entry["reset_credits"]["credits"][0]["expires_at"],
-            expiry.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)
-        );
-        assert!(
-            entry["sections"].as_array().unwrap().iter().any(|section| {
-                section["type"] == "block" && section["label"] == "Reset credits"
-            })
-        );
+    fn entry_ids_and_names_carry_the_provider_and_its_account() {
+        let tab = TabId::vendor(VendorId::Openrouter);
+        assert_eq!(tab_id(&tab), "openrouter");
+        assert_eq!(tab_name(&tab), "openrouter");
+        assert_eq!(tab_display_name(&tab), "OpenRouter");
+        let account = TabId::account_for(VendorId::Openrouter, "work");
+        assert_eq!(tab_id(&account), "openrouter@work");
+        assert_eq!(tab_name(&account), "openrouter · work");
+        assert_eq!(tab_display_name(&account), "OpenRouter · work");
     }
 
     #[test]
-    fn json_exposes_supergrok_reset_credit_expiries() {
-        let expiry: DateTime<Utc> = "2026-10-03T23:00:00Z".parse().unwrap();
-        let state = TabState::Ready(Box::new(ReadyTab {
-            snapshot: VendorSnapshot::SuperGrok(SuperGrokSnapshot {
-                plan: "SuperGrok".into(),
-                account: "test-account".into(),
-                weekly_pct: 0,
-                period: SuperGrokPeriod::Weekly,
-                reset_at: None,
-                prepaid_balance: None,
-                on_demand_used_cents: None,
-                on_demand_cap_cents: None,
-                reset_credits: ResetCredits {
-                    available: 1,
-                    credits: vec![ResetCredit {
-                        title: None,
-                        expires_at: Some(expiry),
-                    }],
-                },
-                products: Vec::new(),
-            }),
-            stale: false,
-            last_error: None,
-            fetched_at: None,
-            display: Default::default(),
-            monthly_cycle_day: None,
-        }));
-        let projected = entry_from_state(&TabId::vendor(VendorId::Supergrok), &state, Utc::now());
-        let value: serde_json::Value =
-            serde_json::from_str(&render_json_for_primary(&[projected], None)).unwrap();
-        let entry = &value["entries"][0];
-
-        assert_eq!(entry["reset_credits"]["available"], 1);
-        assert_eq!(
-            entry["reset_credits"]["credits"][0]["expires_at"],
-            expiry.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)
-        );
-    }
-
-    #[test]
-    fn cursor_json_matches_the_shared_frontend_pacing_fixture() {
-        let now = "2026-09-25T12:00:00Z".parse::<DateTime<Utc>>().unwrap();
-        let state = TabState::Ready(Box::new(ReadyTab {
-            snapshot: VendorSnapshot::Cursor(CursorSnapshot {
-                plan: "Ultra".into(),
-                auto_pct: 70,
-                api_pct: 30,
-                total_pct: 50,
-                unlimited: false,
-                on_demand_enabled: false,
-                on_demand_used_cents: None,
-                on_demand_limit_cents: None,
-                reset_at: Some(now + chrono::Duration::days(5)),
-                cycle_start: Some(now - chrono::Duration::days(5)),
-                credits: Vec::new(),
-            }),
-            stale: false,
-            last_error: None,
-            fetched_at: None,
-            display: Default::default(),
-            monthly_cycle_day: None,
-        }));
-        let projected = entry_from_state(&TabId::vendor(VendorId::Cursor), &state, now);
-        let rendered = render_json_for_primary(&[projected], None);
-        let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
-        let fixture: serde_json::Value =
-            serde_json::from_str(include_str!("../tests/fixtures/cursor_paced_report.json"))
-                .unwrap();
-        let entry = &value["entries"][0];
-        let expected = &fixture["entries"][0];
-        assert_eq!(entry["id"], expected["id"]);
-        assert_eq!(entry["display_name"], expected["display_name"]);
-        assert_eq!(entry["plan"], expected["plan"]);
-        let metrics: Vec<_> = entry["sections"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|section| section["type"] == "metric")
-            .collect();
-        assert_eq!(metrics.len(), 2);
-        for (index, metric) in metrics.into_iter().enumerate() {
-            assert_eq!(metric, &expected["sections"][index]);
-            for field in ["percent", "detail", "reset_at", "window_secs"] {
-                assert_eq!(entry["metrics"][index][field], metric[field]);
-            }
-        }
-    }
-
-    /// A rolling window's exact length rides along with its row, in both the
-    /// ordered `sections` and the `metrics` convenience view, and is omitted
-    /// (not `null`) for a metric that has none.
-    #[test]
-    fn grokbot_json_matches_the_shared_frontend_pacing_fixture() {
-        let now = "2026-09-25T12:00:00Z".parse::<DateTime<Utc>>().unwrap();
-        let state = TabState::Ready(Box::new(ReadyTab {
-            snapshot: VendorSnapshot::Grokbot(crate::usage::GrokbotSnapshot {
-                plan: "Grok Bot Plan".into(),
-                billed_by: Some("Cursor Ultra".into()),
-                has_included_allowance: true,
-                weekly_pct: 70,
-                has_available_usage: true,
-                on_demand_enabled: false,
-                period_start: Some(now - chrono::Duration::days(5)),
-                reset_at: Some(now + chrono::Duration::days(5)),
-                window: Some(chrono::Duration::days(10)),
-            }),
-            stale: false,
-            last_error: None,
-            fetched_at: None,
-            display: Default::default(),
-            monthly_cycle_day: None,
-        }));
-        let projected = entry_from_state(&TabId::vendor(VendorId::Grokbot), &state, now);
-        let rendered = render_json_for_primary(&[projected], None);
-        let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
-        let fixture: serde_json::Value =
-            serde_json::from_str(include_str!("../tests/fixtures/grokbot_paced_report.json"))
-                .unwrap();
-        let entry = &value["entries"][0];
-        let expected = &fixture["entries"][0];
-        assert_eq!(entry["id"], expected["id"]);
-        assert_eq!(entry["display_name"], expected["display_name"]);
-        assert_eq!(entry["plan"], expected["plan"]);
-        let metric = entry["sections"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|section| section["type"] == "metric")
-            .unwrap();
-        assert_eq!(metric, &expected["sections"][0]);
-        for field in ["percent", "detail", "reset_at", "window_secs"] {
-            assert_eq!(entry["metrics"][0][field], metric[field]);
-        }
-    }
-
-    #[test]
-    fn json_carries_the_window_length_only_for_exact_windows() {
-        use crate::usage::{AnthropicSnapshot, UsageWindow};
-
-        let now = Utc::now();
-        let state = TabState::Ready(Box::new(ReadyTab {
-            snapshot: VendorSnapshot::Anthropic(AnthropicSnapshot {
-                plan: "Claude Max 20x".into(),
-                session: UsageWindow {
-                    utilization_pct: 29,
-                    resets_at: Some(now + chrono::Duration::minutes(50)),
-                    window_duration: chrono::Duration::hours(5),
-                },
-                weekly: UsageWindow {
-                    utilization_pct: 32,
-                    resets_at: Some(now + chrono::Duration::days(4)),
-                    window_duration: chrono::Duration::days(7),
-                },
-                sonnet: None,
-                scoped: vec![],
-                extra: None,
-                reset_credits: Default::default(),
-                cloud_credits: None,
-                usage_credits: None,
-            }),
-            stale: false,
-            last_error: None,
-            fetched_at: None,
-            display: Default::default(),
-            monthly_cycle_day: None,
-        }));
-        let projected = entry_from_state(&TabId::vendor(VendorId::Anthropic), &state, now);
-        let rendered = render_json_for_primary(&[projected], None);
-        let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
-        let first = &value["entries"][0];
-
-        let window_of = |label: &str| {
-            first["sections"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|section| section["label"] == label)
-                .map(|section| section["window_secs"].clone())
-                .unwrap_or_else(|| panic!("no section labelled {label}"))
-        };
-        assert_eq!(window_of("Session (5h)"), 18_000);
-        assert_eq!(window_of("Weekly (7d)"), 604_800);
-        assert_eq!(first["metrics"][0]["label"], "Session (5h)");
-        assert_eq!(first["metrics"][0]["window_secs"], 18_000);
-        assert_eq!(first["metrics"][1]["window_secs"], 604_800);
-
-        // Same shape from the single-entry collector a frontend refreshes one provider with.
-        let single: serde_json::Value =
-            serde_json::from_str(&render_json_entries(&[entry_from_state(
-                &TabId::vendor(VendorId::Anthropic),
-                &state,
-                now,
-            )]))
-            .unwrap();
-        assert!(single.get("primary").is_none());
-        assert_eq!(single["entries"][0]["metrics"][0]["window_secs"], 18_000);
-
-        // A hand-built metric with no window serializes without the key at all.
-        let bare =
-            render_json_for_primary(&[entry("cursor", vec![metric("Auto", 5, "5%", "")])], None);
-        let bare: serde_json::Value = serde_json::from_str(&bare).unwrap();
-        assert!(
-            bare["entries"][0]["metrics"][0]
-                .get("window_secs")
-                .is_none()
-        );
-        assert!(
-            bare["entries"][0]["sections"][0]
-                .get("window_secs")
-                .is_none()
-        );
-    }
-
-    /// A per-provider refresh narrows the configured tab list to the
-    /// one whose report id it was shown; anything else yields nothing rather
-    /// than a fallback to the whole report.
-    #[test]
-    fn tabs_matching_selects_exactly_the_entry_with_that_id() {
-        use crate::tui::app::tabs_from_config;
-
-        // Flip the flags both ways rather than trusting any vendor's default,
-        // so the match below is this test's doing and the miss is a real one.
-        let mut config = Config::default();
-        config.zai.enabled = false;
-        config.deepseek.enabled = false;
-        assert!(tabs_matching(&tabs_from_config(&config), "zai").is_empty());
-        assert!(tabs_matching(&tabs_from_config(&config), "deepseek").is_empty());
-        config.zai.enabled = true;
-        config.deepseek.enabled = true;
-        let tabs = tabs_from_config(&config);
-
-        assert_eq!(
-            tabs_matching(&tabs, "zai"),
-            vec![TabId::vendor(VendorId::Zai)]
-        );
-        assert_eq!(
-            tabs_matching(&tabs, "deepseek"),
-            vec![TabId::vendor(VendorId::Deepseek)]
-        );
-        assert!(tabs_matching(&tabs, "not-a-vendor").is_empty());
-        assert!(tabs_matching(&tabs, "zai@work").is_empty());
-        assert!(tabs_matching(&tabs, "").is_empty());
-    }
-
-    /// Named accounts are addressed by the same `<vendor>@<label>` id the
-    /// report prints, so a frontend can refresh one Claude account by itself.
-    #[test]
-    fn tabs_matching_addresses_named_accounts_by_report_id() {
-        let tabs = vec![
-            TabId::vendor(VendorId::Anthropic),
-            TabId::account("gmail"),
-            TabId::account("work"),
-        ];
-        assert_eq!(
-            tabs_matching(&tabs, "anthropic@work"),
-            vec![TabId::account("work")]
-        );
-        assert_eq!(
-            tabs_matching(&tabs, "anthropic"),
-            vec![TabId::vendor(VendorId::Anthropic)]
-        );
-        assert!(tabs_matching(&tabs, "anthropic@nobody").is_empty());
-    }
-
-    #[test]
-    fn report_reset_metadata_follows_multi_metric_order() {
-        let weekly_reset = Utc::now() + chrono::Duration::days(3);
-        let window_reset = Utc::now() + chrono::Duration::hours(2);
-        let state = TabState::Ready(Box::new(ReadyTab {
-            snapshot: VendorSnapshot::Kimi(KimiSnapshot {
-                plan: Some("Kimi Code".into()),
-                weekly_limit: 1_000,
-                weekly_used: 200,
-                weekly_remaining: 800,
-                weekly_reset_at: Some(weekly_reset),
-                has_weekly: true,
-                monthly_pct: None,
-                monthly_reset_at: None,
-                window_limit: 100,
-                window_used: 40,
-                window_remaining: 60,
-                window_reset_at: Some(window_reset),
-            }),
-            stale: false,
-            last_error: None,
-            fetched_at: None,
-            display: Default::default(),
-            monthly_cycle_day: None,
-        }));
-        let projected = entry_from_state(&TabId::vendor(VendorId::Kimi), &state, Utc::now());
-        // Pair each reset with its own row rather than pinning the row order —
-        // that order is `panels::kimi_sections`' to choose, and pinning it here
-        // would only duplicate the test that owns it.
-        let resets: Vec<_> = projected
+    fn a_ready_entry_carries_identity_status_and_sections() {
+        let tab = TabId::vendor(VendorId::Openrouter);
+        let entry = entry_from_state(&tab, &ready(openrouter()), now());
+        assert_eq!(entry.id, "openrouter");
+        assert_eq!(entry.short_name, "opr");
+        assert!(!entry.icon.is_empty());
+        assert!(!entry.stale);
+        assert!(entry.error.is_none());
+        assert!(entry.fetched_at.is_some());
+        entry
             .sections
             .iter()
-            .filter_map(|section| match section {
-                ReportSection::Metric {
-                    label, reset_at, ..
-                } => Some((label.as_str(), *reset_at)),
-                _ => None,
+            .find(|section| {
+                matches!(section, ReportSection::Metric { label, percent, severity, .. }
+                    if label == "Credit balance" && *percent == 25 && severity == "low")
             })
-            .collect();
-
-        assert_eq!(
-            resets
-                .iter()
-                .copied()
-                .collect::<std::collections::HashMap<_, _>>(),
-            std::collections::HashMap::from([
-                ("Weekly quota", Some(weekly_reset)),
-                ("Rolling window (5h)", Some(window_reset)),
-            ])
-        );
+            .expect("a credit balance metric");
     }
 
     #[test]
-    fn json_preserves_non_metric_sections_without_fabricating_percentages() {
-        let rendered = render_json_for_primary(
-            &[entry(
-                "openrouter",
-                vec![
-                    metric("Credit balance", 25, "$75.00", "$25.00 used"),
-                    ReportSection::Spacer,
-                    ReportSection::Text {
-                        label: "Resets".into(),
-                        value: "in 9d".into(),
-                        used_cents: None,
-                        limit_cents: None,
-                        percent: None,
-                        severity: None,
-                    },
-                    ReportSection::Block {
-                        label: "Usage by period".into(),
-                        body: vec!["today $1.00 · week $5.00".into()],
-                    },
-                ],
-            )],
-            None,
-        );
-        let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
-        let first = &value["entries"][0];
-        assert_eq!(first["metrics"].as_array().unwrap().len(), 1);
-        assert_eq!(first["sections"][1]["type"], "spacer");
-        assert_eq!(first["sections"][2]["type"], "text");
-        assert!(first["sections"][2].get("percent").is_none());
-        assert_eq!(first["sections"][3]["type"], "block");
-        assert_eq!(first["sections"][3]["body"][0], "today $1.00 · week $5.00");
-    }
-
-    #[test]
-    fn real_panel_projection_keeps_openrouter_blocks() {
-        let state = TabState::Ready(Box::new(ReadyTab {
-            snapshot: VendorSnapshot::Openrouter(OpenRouterSnapshot {
-                label: "OR".into(),
-                total_credits: 100.0,
-                total_usage: 25.0,
-                usage_daily: 1.0,
-                usage_weekly: 5.0,
-                usage_monthly: 25.0,
-                is_free_tier: false,
-                limit: None,
-                limit_remaining: None,
-                recent_models: Vec::new(),
-            }),
-            stale: false,
-            last_error: None,
-            fetched_at: None,
-            display: Default::default(),
-            monthly_cycle_day: None,
-        }));
-        let projected = entry_from_state(&TabId::vendor(VendorId::Openrouter), &state, Utc::now());
-        assert!(projected.sections.iter().any(|section| matches!(
-            section,
-            ReportSection::Block { label, .. } if label == "Usage by period"
-        )));
-        assert!(projected.sections.iter().any(|section| matches!(
-            section,
-            ReportSection::Block { label, .. } if label == "Tier"
-        )));
-        let text = render_text(&[projected]);
-        assert!(text.contains("Usage by period"), "{text}");
-        assert!(
-            text.contains("today $1.00 · week $5.00 · month $25.00"),
-            "{text}"
-        );
-    }
-
-    #[test]
-    fn ollama_credit_report_carries_monthly_reset_and_dollar_details() {
-        let body: crate::ollama::types::Body = serde_json::from_str(include_str!(
-            "../tests/fixtures/ollama/balance_credits.json"
-        ))
-        .unwrap();
-        let state = TabState::Ready(Box::new(ReadyTab {
-            snapshot: VendorSnapshot::Ollama(body.into_snapshot("pro".into())),
-            stale: false,
-            last_error: None,
-            fetched_at: None,
-            display: Default::default(),
-            monthly_cycle_day: None,
-        }));
-        let now = "2026-10-09T08:00:00Z".parse().unwrap();
-        let projected = entry_from_state(&TabId::vendor(VendorId::Ollama), &state, now);
-        assert!(projected.sections.iter().any(|section| matches!(
-            section,
-            ReportSection::Block { label, body } if label == "Credits"
-                && body.iter().any(|line| line == "$45.00 remaining of $60.00")
-                && body.iter().any(|line| line == "Purchased credits: $12.50")
-        )));
-        let rendered = render_json_entries(&[projected]);
-        assert!(rendered.contains("Monthly"), "{rendered}");
-        assert!(rendered.contains("2026-11-08T08:00:00"), "{rendered}");
-        assert!(!rendered.contains("Session (5h)"), "{rendered}");
-    }
-
-    #[test]
-    fn real_balance_text_is_not_exposed_as_a_percentage_metric() {
-        let state = TabState::Ready(Box::new(ReadyTab {
-            snapshot: VendorSnapshot::Deepseek(DeepseekSnapshot {
-                is_available: true,
-                balance: 12.5,
-                granted: 2.5,
-                topped_up: 10.0,
-                currency: "USD".into(),
-            }),
-            stale: false,
-            last_error: None,
-            fetched_at: None,
-            display: Default::default(),
-            monthly_cycle_day: None,
-        }));
-        let projected = entry_from_state(&TabId::vendor(VendorId::Deepseek), &state, Utc::now());
-        assert!(projected.sections.iter().any(|section| matches!(
-            section,
-            ReportSection::Text {
-                label,
-                value,
-                used_cents: None,
-                limit_cents: None,
-                percent: None,
-                severity: None,
-            } if label == "Balance" && value == "$12.50"
-        )));
-        assert!(
-            !projected
-                .sections
-                .iter()
-                .any(|section| matches!(section, ReportSection::Metric { .. }))
-        );
-    }
-
-    /// Half up, including the exact `.5` tie, and no clamp at 100. These are
-    /// the figures the Omarchy chip shows, so a frontend that trusts `percent`
-    /// and one that divides the cents must agree.
-    #[test]
-    fn consumed_percent_rounds_half_up_and_keeps_overrun() {
-        assert_eq!(consumed_percent(0, 500), Some(0));
-        assert_eq!(consumed_percent(125, 500), Some(25));
-        assert_eq!(consumed_percent(480, 500), Some(96));
-        assert_eq!(consumed_percent(1785, 35_000), Some(5));
-        assert_eq!(consumed_percent(1, 2), Some(50));
-        assert_eq!(consumed_percent(1, 8), Some(13));
-        assert_eq!(consumed_percent(600, 500), Some(120));
-        assert_eq!(consumed_percent(-10, 500), Some(0));
-        assert_eq!(consumed_percent(1, 0), None);
-        assert_eq!(consumed_percent(1, -5), None);
-    }
-
-    #[test]
-    fn cursor_on_demand_row_exports_cents_and_percent() {
-        let state = TabState::Ready(Box::new(ReadyTab {
-            snapshot: VendorSnapshot::Cursor(CursorSnapshot {
-                plan: "Pro".into(),
-                auto_pct: 35,
-                api_pct: 7,
-                total_pct: 35,
-                unlimited: false,
-                on_demand_enabled: true,
-                on_demand_used_cents: Some(125),
-                on_demand_limit_cents: Some(500),
-                reset_at: None,
-                cycle_start: None,
-                credits: Vec::new(),
-            }),
-            stale: false,
-            last_error: None,
-            fetched_at: None,
-            display: Default::default(),
-            monthly_cycle_day: None,
-        }));
-        let projected = entry_from_state(&TabId::vendor(VendorId::Cursor), &state, Utc::now());
-        assert!(projected.sections.iter().any(|section| matches!(
-            section,
-            ReportSection::Text {
-                label,
-                value,
-                used_cents: Some(125),
-                limit_cents: Some(500),
-                percent: Some(25),
-                severity: Some(severity),
-            } if label == "On-Demand" && value == "$1.25 / $5.00" && severity == "low"
-        )));
-        let rendered = render_json_for_primary(std::slice::from_ref(&projected), None);
-        let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
-        let row = value["entries"][0]["sections"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|section| section["label"] == "On-Demand")
-            .unwrap();
-        assert_eq!(row["type"], "text");
-        assert_eq!(row["value"], "$1.25 / $5.00");
-        assert_eq!(row["used_cents"], 125);
-        assert_eq!(row["limit_cents"], 500);
-        assert_eq!(row["percent"], 25);
-        // The text report still prints the formatted pair. The cents are a
-        // JSON contract, not a second way to spell the TUI line.
-        let text = render_text(std::slice::from_ref(&projected));
-        assert!(text.contains("$1.25 / $5.00"), "{text}");
-
-        // Spend with no cap exports the cents and nothing to divide by.
-        let state = TabState::Ready(Box::new(ReadyTab {
-            snapshot: VendorSnapshot::Cursor(CursorSnapshot {
-                plan: "Pro".into(),
-                auto_pct: 35,
-                api_pct: 7,
-                total_pct: 35,
-                unlimited: false,
-                on_demand_enabled: true,
-                on_demand_used_cents: Some(1785),
-                on_demand_limit_cents: None,
-                reset_at: None,
-                cycle_start: None,
-                credits: Vec::new(),
-            }),
-            stale: false,
-            last_error: None,
-            fetched_at: None,
-            display: Default::default(),
-            monthly_cycle_day: None,
-        }));
-        let projected = entry_from_state(&TabId::vendor(VendorId::Cursor), &state, Utc::now());
-        let rendered = render_json_for_primary(std::slice::from_ref(&projected), None);
-        let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
-        let row = value["entries"][0]["sections"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|section| section["label"] == "On-Demand")
-            .unwrap();
-        assert_eq!(row["value"], "$17.85");
-        assert_eq!(row["used_cents"], 1785);
-        assert!(row.get("limit_cents").is_none());
-        assert!(row.get("percent").is_none());
-    }
-
-    /// The spending-page grant is a meter of spend against the grant total.
-    /// The row's value is what remains, the same way On-Demand shows dollars
-    /// left beside a used bar. `used_cents` stays off it: that field means
-    /// On-Demand spend, and remaining cents would be read as spent.
-    #[test]
-    fn cursor_credit_row_is_a_meter_of_remaining_dollars() {
-        let state = TabState::Ready(Box::new(ReadyTab {
-            snapshot: VendorSnapshot::Cursor(CursorSnapshot {
-                plan: "Pro".into(),
-                auto_pct: 10,
-                api_pct: 4,
-                total_pct: 10,
-                unlimited: false,
-                on_demand_enabled: false,
-                on_demand_used_cents: None,
-                on_demand_limit_cents: None,
-                reset_at: Some(Utc::now() + chrono::Duration::days(9)),
-                cycle_start: None,
-                credits: vec![CursorCreditGrant {
-                    remaining_cents: 2100,
-                    total_cents: 2500,
-                    expires_at: Some(Utc::now() + chrono::Duration::days(30)),
-                    display_name: "Power user grant".into(),
-                }],
-            }),
-            stale: false,
-            last_error: None,
-            fetched_at: None,
-            display: Default::default(),
-            monthly_cycle_day: None,
-        }));
-        let projected = entry_from_state(&TabId::vendor(VendorId::Cursor), &state, Utc::now());
-        let rendered = render_json_for_primary(std::slice::from_ref(&projected), None);
-        let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
-        let row = value["entries"][0]["sections"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|section| section["label"] == "Credits")
-            .expect("credits row");
-        assert_eq!(row["type"], "metric");
-        assert_eq!(row["percent"], 16);
-        assert_eq!(row["value"], "$21.00");
-        assert_eq!(row["headline"], "value");
-        assert!(
-            row["detail"]
-                .as_str()
-                .unwrap()
-                .contains("$4.00 of $25.00 used (16%)"),
-            "{row}"
-        );
-        assert!(row.get("used_cents").is_none());
-        assert!(row.get("limit_cents").is_none());
-    }
-
-    /// Every metric declares which of its two numbers goes on the bar, in both
-    /// the ordered `sections` list and the `metrics` convenience view, so no
-    /// frontend has to infer a balance row from its label.
-    #[test]
-    fn json_metrics_name_their_headline() {
-        let deepseek = |display: crate::balance::DisplayPrefs| {
-            let state = TabState::Ready(Box::new(ReadyTab {
-                snapshot: VendorSnapshot::Deepseek(DeepseekSnapshot {
-                    is_available: true,
-                    balance: 50.0,
-                    granted: 50.0,
-                    topped_up: 0.0,
-                    currency: "USD".into(),
-                }),
-                stale: false,
-                last_error: None,
-                fetched_at: None,
-                display,
-                monthly_cycle_day: None,
-            }));
-            let entry = entry_from_state(&TabId::vendor(VendorId::Deepseek), &state, Utc::now());
-            let rendered = render_json_entries(&[entry]);
-            serde_json::from_str::<serde_json::Value>(&rendered).unwrap()
-        };
-
-        let amount = deepseek(crate::balance::DisplayPrefs::balance(
-            Some(200.0),
-            crate::balance::Headline::Amount,
-        ));
-        let metric = &amount["entries"][0]["metrics"][0];
-        assert_eq!(metric["headline"], "value");
-        assert_eq!(metric["percent"], 75);
-        assert_eq!(metric["value"], "$50.00");
-        assert!(
-            metric["detail"].as_str().unwrap().contains("$200.00"),
-            "{metric}"
-        );
-
-        let percent = deepseek(crate::balance::DisplayPrefs::balance(
-            Some(200.0),
-            crate::balance::Headline::Percent,
-        ));
-        let section = percent["entries"][0]["sections"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|section| section["type"] == "metric")
-            .expect("a metric section");
-        assert_eq!(section["headline"], "percent");
-        assert_eq!(section["value"], "75%");
-        assert!(
-            section["detail"].as_str().unwrap().contains("$50.00"),
-            "{section}"
-        );
-
-        // A quota vendor is unchanged: still a percent headline.
-        let anthropic_api = entry_from_state(
-            &TabId::vendor(VendorId::Openrouter),
-            &TabState::Ready(Box::new(ReadyTab {
-                snapshot: VendorSnapshot::Openrouter(crate::usage::OpenRouterSnapshot {
-                    label: "OpenRouter".into(),
-                    total_credits: 100.0,
-                    total_usage: 40.0,
-                    usage_daily: 0.0,
-                    usage_weekly: 0.0,
-                    usage_monthly: 0.0,
-                    is_free_tier: false,
-                    limit: None,
-                    limit_remaining: None,
-                    recent_models: Vec::new(),
-                }),
-                stale: false,
-                last_error: None,
-                fetched_at: None,
-                display: Default::default(),
-                monthly_cycle_day: None,
-            })),
-            Utc::now(),
-        );
-        let value: serde_json::Value =
-            serde_json::from_str(&render_json_entries(&[anthropic_api])).unwrap();
-        assert_eq!(value["entries"][0]["metrics"][0]["headline"], "percent");
-    }
-
-    #[test]
-    fn failed_entries_do_not_duplicate_tui_retry_rows() {
-        let failed = entry_from_state(
-            &TabId::vendor(VendorId::Openai),
-            &TabState::error("not \x1b[31msigned in\u{202e}"),
-            Utc::now(),
-        );
-        assert_eq!(failed.error.as_deref(), Some("not [31msigned in"));
-        assert!(failed.sections.is_empty());
-    }
-
-    #[test]
-    fn anthropic_error_keeps_oauth_plan_without_inventing_gauges() {
-        let failed = TabState::error_with_plan(
-            "HTTP 401: authentication rejected — credentials may be missing, expired, or invalid",
-            Some("Claude Max 5x".into()),
-        );
-        let entry = entry_from_state(&TabId::vendor(VendorId::Anthropic), &failed, Utc::now());
-        assert_eq!(entry.plan.as_deref(), Some("Claude Max 5x"));
+    fn a_failed_entry_reports_the_error_and_no_rows() {
+        let tab = TabId::vendor(VendorId::Deepseek);
+        let state = TabState::error_with_plan("no API key", Some("DeepSeek".to_string()));
+        let entry = entry_from_state(&tab, &state, now());
+        assert_eq!(entry.error.as_deref(), Some("no API key"));
+        assert_eq!(entry.plan.as_deref(), Some("DeepSeek"));
         assert!(entry.sections.is_empty());
-        assert!(entry.error.as_deref().unwrap().contains("401"));
-        let rendered = render_json_for_primary(&[entry], None);
-        let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
-        assert_eq!(value["entries"][0]["plan"], "Claude Max 5x");
+        let value = document(std::slice::from_ref(&entry), None);
         assert_eq!(value["entries"][0]["status"], "error");
-        assert_eq!(value["entries"][0]["sections"].as_array().unwrap().len(), 0);
+        assert_eq!(value["entries"][0]["error"], "no API key");
     }
 
     #[test]
-    fn produced_document_exits_zero_even_when_every_entry_failed() {
-        let mut failed = entry("openai", Vec::new());
-        failed.error = Some("not signed in".into());
-        assert_eq!(report_exit_code(&[failed]), 0);
-
-        let mut failed = entry("openai", Vec::new());
-        failed.error = Some("not signed in".into());
-        assert_eq!(report_exit_code(&[failed, entry("cursor", Vec::new())]), 0);
-
-        assert_eq!(report_exit_code(&[entry("cursor", Vec::new())]), 0);
-        // Empty is not a produced document — collect_entries already fails
-        // before this helper when nothing is enabled.
-        assert_ne!(report_exit_code(&[]), 0);
-    }
-
-    fn custom_spec(id: &str, enabled: bool) -> crate::config::CustomProviderConfig {
-        crate::config::CustomProviderConfig {
-            id: id.into(),
-            name: "My Tool".into(),
-            short_name: "myt".into(),
-            enabled,
-            ..Default::default()
+    fn a_cached_entry_is_marked_stale() {
+        let mut state = ready(deepseek());
+        if let TabState::Ready(ready) = &mut state {
+            ready.stale = true;
+            ready.last_error = Some((429, "rate limited".into()));
         }
-    }
-
-    /// A custom provider can choose a built-in vendor's mark with `brand`; the
-    /// report relays that slug without copying config-only data into `TabId`.
-    #[test]
-    fn a_custom_entry_relays_the_brand_it_borrowed() {
-        let spec = crate::config::CustomProviderConfig {
-            brand: Some("opencode-go".into()),
-            ..custom_spec("oc-second", true)
-        };
-        let config = Config {
-            custom: vec![spec],
-            ..Default::default()
-        };
-        let tab = TabId::custom(&config.custom[0]);
-        let entry =
-            entry_from_state_with_config(&config, &tab, &TabState::error("HTTP 500"), Utc::now());
-        assert_eq!(entry.brand.as_deref(), Some("opencode-go"));
-        // The tag is untouched: the mark is artwork, not the bar label.
-        assert_eq!(entry.short_name, "myt");
-
-        let value: serde_json::Value =
-            serde_json::from_str(&render_json_for_primary(&[entry], None)).unwrap();
-        assert_eq!(value["entries"][0]["brand"], "opencode-go");
-    }
-
-    /// A `[[custom]]` provider is one more report entry after the built-ins,
-    /// addressed as `custom:<id>`; a disabled one is absent.
-    #[test]
-    fn enabled_custom_providers_are_listed_after_builtins_by_custom_id() {
-        use crate::tui::app::tabs_from_config;
-
-        let mut config = Config {
-            custom: vec![custom_spec("mytool", true)],
-            ..Default::default()
-        };
-        let tabs = tabs_from_config(&config);
-        let ids: Vec<String> = tabs.iter().map(tab_id).collect();
-        assert_eq!(ids.last().map(String::as_str), Some("custom:mytool"));
+        let entry = entry_from_state(&TabId::vendor(VendorId::Deepseek), &state, now());
+        assert!(entry.stale);
         assert!(
-            ids[..ids.len() - 1]
-                .iter()
-                .all(|id| !id.starts_with("custom:"))
-        );
-        assert_eq!(tabs.last(), Some(&TabId::custom(&config.custom[0])));
-
-        config.custom[0].enabled = false;
-        assert!(
-            tabs_from_config(&config)
-                .iter()
-                .all(|tab| tab_id(tab) != "custom:mytool")
+            entry.sections.iter().any(|section| matches!(
+                section,
+                ReportSection::Text { label, .. } if label == "HTTP 429"
+            )),
+            "{:?}",
+            entry.sections.len()
         );
     }
 
     #[test]
-    fn custom_entries_carry_their_configured_names_and_projected_windows() {
-        use crate::custom::types::{CustomMetric, CustomSnapshot, CustomText};
-
-        let now = Utc::now();
-        let spec = custom_spec("mytool", true);
-        let tab = TabId::custom(&spec);
-        assert_eq!(tab_id(&tab), "custom:mytool");
-        assert_eq!(tab_name(&tab), "My Tool");
-        assert_eq!(tab_display_name(&tab), "My Tool");
-
-        let session_reset = now + chrono::Duration::hours(2);
-        let state = TabState::Ready(Box::new(ReadyTab {
-            snapshot: VendorSnapshot::Custom(CustomSnapshot {
-                plan: Some("Team".into()),
-                metrics: vec![
-                    CustomMetric {
-                        label: "Session".into(),
-                        pct: 40,
-                        footnote: "40 of 100".into(),
-                        resets_at: Some(session_reset),
-                        window_secs: Some(18_000),
-                    },
-                    CustomMetric {
-                        label: "Monthly".into(),
-                        pct: 10,
-                        footnote: String::new(),
-                        resets_at: None,
-                        window_secs: None,
-                    },
-                ],
-                texts: vec![CustomText {
-                    label: "Region".into(),
-                    value: "eu".into(),
-                }],
-            }),
-            stale: false,
-            last_error: None,
-            fetched_at: Some(now),
-            display: Default::default(),
-            monthly_cycle_day: None,
-        }));
-        let projected = entry_from_state(&tab, &state, now);
-        assert_eq!(projected.id, "custom:mytool");
-        assert_eq!(projected.display_name, "My Tool");
-        assert_eq!(projected.short_name, "myt");
-        assert_eq!(projected.plan.as_deref(), Some("Team"));
-
-        let rendered = render_json_for_primary(&[projected], None);
-        let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
-        let first = &value["entries"][0];
-        assert_eq!(first["short_name"], "myt");
-        assert_eq!(first["icon"], "myt");
-        // No `brand`, so the optional field is absent and the frontend keeps
-        // drawing the short_name tag.
-        assert!(first.get("brand").is_none());
-        assert_eq!(first["metrics"][0]["label"], "Session");
-        assert_eq!(first["metrics"][0]["percent"], 40);
-        assert_eq!(first["metrics"][0]["window_secs"], 18_000);
-        assert_eq!(
-            first["metrics"][0]["reset_at"],
-            session_reset.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)
-        );
-        assert_eq!(first["metrics"][1]["label"], "Monthly");
-        assert!(first["metrics"][1].get("window_secs").is_none());
-        assert!(first["sections"].as_array().unwrap().iter().any(|section| {
-            section["type"] == "text" && section["label"] == "Region" && section["value"] == "eu"
-        }));
-
-        // A failed custom entry still carries its code and names.
-        let failed = entry_from_state(&tab, &TabState::error("HTTP 500"), now);
-        assert_eq!(failed.short_name, "myt");
-        assert_eq!(failed.display_name, "My Tool");
-        assert!(failed.sections.is_empty());
-    }
-
-    /// Every pid is running: the scan's own liveness filtering is covered by
-    /// `context::activity`, so these tests are only about where results land.
-    struct EverythingRuns;
-
-    impl ProcessProbe for EverythingRuns {
-        fn is_running(&self, _pid: u32, _start_time: Option<&str>) -> bool {
-            true
-        }
-    }
-
-    /// A temp home holding a default and a `work` Claude config directory,
-    /// with the config that points at them and the monitor switched on.
-    fn activity_fixture() -> (tempfile::TempDir, Config) {
-        let home = tempfile::TempDir::new().unwrap();
-        for dir in ["default", "work"] {
-            std::fs::create_dir_all(home.path().join(dir).join("sessions")).unwrap();
-        }
-        let config = Config {
-            anthropic: crate::config::AnthropicConfig {
-                credentials_path: Some(home.path().join("default").join(".credentials.json")),
-                accounts: vec![crate::config::AnthropicAccount {
-                    label: "work".into(),
-                    credentials_path: home.path().join("work").join(".credentials.json"),
-                }],
-                ..Default::default()
-            },
-            ..enabled_context_config()
-        };
-        (home, config)
-    }
-
-    fn live_session(config_dir: &std::path::Path, pid: u32, status: &str) {
-        let body = json!({"pid": pid, "kind": "interactive", "status": status});
-        std::fs::write(
-            config_dir.join("sessions").join(format!("{pid}.json")),
-            body.to_string(),
-        )
-        .unwrap();
-    }
-
-    /// #356: each Claude account reads its own `CLAUDE_CONFIG_DIR`; a Desktop
-    /// profile (no config dir), an errored entry and other vendors are left out.
-    #[test]
-    fn activity_targets_map_each_ready_claude_entry_to_its_config_dir() {
-        let (home, config) = activity_fixture();
-        let mut errored = entry("anthropic@work", vec![]);
-        errored.error = Some("rate limited".into());
-        let entries = [
-            entry("anthropic", vec![]),
-            entry("anthropic@work", vec![]),
-            entry("anthropic@desktop-only", vec![]),
-            entry("cursor", vec![]),
-            errored,
+    fn the_document_names_the_schema_the_primary_and_the_overview_order() {
+        let entries = vec![
+            entry_from_state(
+                &TabId::vendor(VendorId::Deepseek),
+                &ready(deepseek()),
+                now(),
+            ),
+            entry_from_state(
+                &TabId::account_for(VendorId::Openrouter, "work"),
+                &ready(openrouter()),
+                now(),
+            ),
         ];
+        let value = document(&entries, Some("openrouter"));
+        assert_eq!(value["schema_version"], 1);
+        // A slug with named accounts resolves to the first of its entries.
+        assert_eq!(value["primary"], "openrouter@work");
+        assert_eq!(value["overview_vendors"], json!(["deepseek"]));
+        assert_eq!(value["entries"][0]["short_name"], "dsk");
+        assert_eq!(value["entries"][1]["id"], "openrouter@work");
+    }
 
-        let targets = activity_targets(&config, &entries, None);
-
+    #[test]
+    fn an_unknown_primary_slug_is_reported_as_configured() {
         assert_eq!(
-            targets,
-            vec![
-                (0, home.path().join("default")),
-                (1, home.path().join("work")),
-            ]
+            resolve_primary(Some("opencode-go"), &[]),
+            Some("opencode-go".to_string())
         );
-    }
-
-    /// `account switch` moves the live account's credential into the default
-    /// slot and empties its named one; the fetch then reads the default, and
-    /// so must activity, because that is where `claude` now keeps `sessions/`.
-    #[test]
-    fn a_switched_account_reads_activity_where_its_fetch_reads_credentials() {
-        let (_home, config) = activity_fixture();
-        let entries = [entry("anthropic@work", vec![])];
-        let default_dir = crate::anthropic::creds::default_path()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .to_path_buf();
-
-        // The fixture's `work` slot holds no credential file.
-        assert_eq!(
-            activity_targets(&config, &entries, Some("work")),
-            vec![(0, default_dir)]
-        );
-    }
-
-    /// With a live credential still in the account's own directory (the
-    /// `CLAUDE_CONFIG_DIR` layout), being the CLI login changes nothing.
-    #[test]
-    fn a_live_account_with_its_own_credential_keeps_its_own_directory() {
-        let (home, config) = activity_fixture();
-        std::fs::write(home.path().join("work").join(".credentials.json"), "{}").unwrap();
-        let entries = [entry("anthropic@work", vec![])];
-
-        assert_eq!(
-            activity_targets(&config, &entries, Some("work")),
-            vec![(0, home.path().join("work"))]
-        );
+        assert_eq!(resolve_primary(None, &[]), None);
     }
 
     #[test]
-    fn entries_reading_the_same_directory_are_scanned_once() {
-        let (home, mut config) = activity_fixture();
-        config
-            .anthropic
-            .accounts
-            .push(crate::config::AnthropicAccount {
-                label: "alias".into(),
-                credentials_path: home.path().join("default").join(".credentials.json"),
-            });
-        let entries = [entry("anthropic", vec![]), entry("anthropic@alias", vec![])];
-
-        assert_eq!(
-            activity_targets(&config, &entries, None),
-            vec![(0, home.path().join("default"))]
-        );
-    }
-
-    #[test]
-    fn a_bare_relative_credentials_file_names_no_directory() {
-        let mut config = enabled_context_config();
-        config.anthropic.credentials_path = Some(PathBuf::from("credentials.json"));
-
-        assert!(activity_targets(&config, &[entry("anthropic", vec![])], None).is_empty());
-    }
-
-    #[test]
-    fn activity_lands_on_the_account_whose_sessions_are_live() {
-        let (home, config) = activity_fixture();
-        live_session(&home.path().join("default"), 101, "busy");
-        live_session(&home.path().join("default"), 102, "busy");
-        live_session(&home.path().join("default"), 103, "waiting");
-        live_session(&home.path().join("work"), 201, "idle");
-        let mut entries = [
-            entry("anthropic", vec![metric("Session (5h)", 29, "29%", "")]),
-            entry("anthropic@work", vec![metric("Session (5h)", 4, "4%", "")]),
+    fn the_text_report_prints_one_block_per_entry() {
+        let entries = vec![
+            entry_from_state(
+                &TabId::vendor(VendorId::Deepseek),
+                &ready(deepseek()),
+                now(),
+            ),
+            entry_from_state(
+                &TabId::vendor(VendorId::Openrouter),
+                &ready(openrouter()),
+                now(),
+            ),
         ];
-
-        let targets = activity_targets(&config, &entries, None);
-        apply_session_activity(
-            &mut entries,
-            scan_activity_targets(targets, &EverythingRuns),
-        );
-
-        let [busy, idle] = &entries;
-        assert_eq!(
-            busy.activity,
-            Some(SessionActivity {
-                working: 2,
-                waiting: 1
-            })
-        );
-        match busy.sections.last() {
-            Some(ReportSection::Text { label, value, .. }) => {
-                assert_eq!(label, ACTIVITY_LABEL);
-                assert_eq!(value, "2 working · 1 waiting");
-            }
-            other => panic!("expected the activity row last, got {other:?}"),
-        }
-        // An idle account gets neither the field nor a row.
-        assert_eq!(idle.activity, None);
-        assert_eq!(idle.sections.len(), 1);
-    }
-
-    /// Opt-in like the session list: with the monitor off nothing is scanned
-    /// and not even `~/.claude.json` is consulted, so a live session changes
-    /// nothing. Switched on, the same fixture does produce the row, so the gate
-    /// is what made the difference.
-    #[tokio::test]
-    async fn a_disabled_context_monitor_adds_no_activity() {
-        let (home, mut config) = activity_fixture();
-        live_session(&home.path().join("default"), 101, "busy");
-        let fresh = || {
-            [entry(
-                "anthropic",
-                vec![metric("Session (5h)", 29, "29%", "")],
-            )]
-        };
-
-        config.context.enabled = false;
-        let mut off = fresh();
-        attach_session_activity_with(&config, &mut off, EverythingRuns, || {
-            panic!("the CLI login must not be read while the monitor is off")
-        })
-        .await;
-        assert_eq!(off[0].activity, None);
-        assert_eq!(off[0].sections.len(), 1);
-
-        config.context.enabled = true;
-        let mut on = fresh();
-        attach_session_activity_with(&config, &mut on, EverythingRuns, || None).await;
-        assert_eq!(
-            on[0].activity,
-            Some(SessionActivity {
-                working: 1,
-                waiting: 0
-            })
-        );
+        let text = render_text(&entries);
+        assert!(text.starts_with("deepseek   DeepSeek"), "{text}");
+        assert!(text.contains("$12.50"), "{text}");
+        assert!(text.contains("openrouter   OR"), "{text}");
+        assert!(text.contains("Credit balance"), "{text}");
     }
 
     #[test]
-    fn json_carries_activity_only_on_an_active_account() {
-        let mut active = entry("anthropic", vec![metric("Session (5h)", 29, "29%", "")]);
-        apply_session_activity(
-            std::slice::from_mut(&mut active),
-            vec![(
-                0,
-                SessionActivity {
-                    working: 1,
-                    waiting: 2,
-                },
-            )],
-        );
-        let entries = [active, entry("anthropic@work", vec![])];
-
-        let value: serde_json::Value =
-            serde_json::from_str(&render_json_for_primary(&entries, None)).unwrap();
-
-        let first = &value["entries"][0];
-        assert_eq!(first["activity"], json!({"working": 1, "waiting": 2}));
-        let row = first["sections"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|section| section["label"] == ACTIVITY_LABEL)
-            .expect("an activity row");
-        assert_eq!(row["type"], "text");
-        assert_eq!(row["value"], "1 working · 2 waiting");
-        // Additive fields are absent, not null, when there is nothing to say.
-        assert!(value["entries"][1].get("activity").is_none());
-        assert!(render_text(&entries).contains("1 working · 2 waiting"));
+    fn an_empty_document_is_a_failed_run() {
+        assert_eq!(report_exit_code(&[]), 1);
+        let entries = vec![entry_from_state(
+            &TabId::vendor(VendorId::Deepseek),
+            &ready(deepseek()),
+            now(),
+        )];
+        assert_eq!(report_exit_code(&entries), 0);
     }
 }

@@ -12,33 +12,13 @@
 .env.local
 *.credentials.json
 
-# Per-vendor config scratch files (config.<vendor>.toml) — never commit.
+# Per-provider config scratch files (config.<provider>.toml) — never commit.
 # Only config.example.toml and the user's own config.toml are tracked.
 config.*.toml
 !config.example.toml
-
-# Snapshot review files from `cargo insta`
-*.snap.new
 
 # makepkg build outputs (kept out of the source repo)
 packaging/aur/pkg/
 packaging/aur/src/
 packaging/aur/*.pkg.tar.*
 packaging/aur/*.tar.gz
-
-# GNOME extension - compiled schema (build artifact)
-gnome-extension/schemas/gschemas.compiled
-
-# Compiled macOS menu bar app (built by macos/build.sh)
-macos/ai-usagebar-menubar
-macos/__pycache__/
-
-# Local screenshots for PR bodies (not tracked; drag into the PR on GitHub)
-macos/printscreen/
-
-windows/popover/node_modules/
-windows/popover/dist/
-windows/popover/tsconfig.tsbuildinfo
-
-# Kilo Code local settings
-.kilo/

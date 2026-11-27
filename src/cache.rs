@@ -340,7 +340,7 @@ pub(crate) fn human_backoff(remaining: Duration) -> String {
 /// Async wrapper around [`acquire_lock`].
 ///
 /// The blocking version parks the calling thread in a sleep loop for up to
-/// `timeout`. On a current-thread runtime — which is what the TUI uses — that
+/// `timeout`. On a current-thread runtime — which is what the binary uses — that
 /// stalls *everything*: keyboard input, the refresh timer, and every other
 /// vendor's in-flight request. Running the wait on the blocking pool keeps the
 /// reactor free while a contended lock is waited on.
@@ -426,7 +426,7 @@ pub(crate) fn xdg_cache_dir() -> Result<PathBuf> {
 /// The user's home directory, resolved cross-platform via `directories`
 /// (`$HOME` on Unix/macOS, `%USERPROFILE%` / the Known Folder on Windows).
 ///
-/// The OAuth-credential vendors (`anthropic`, `openai`) read their CLI-managed
+/// A provider whose credential lives in a file its own CLI manages reads that
 /// files from fixed dotfiles under `$HOME`; they share this resolver the same
 /// way they already share [`atomic_write`], so home resolution lives in one
 /// place rather than being reimplemented per vendor.
@@ -476,7 +476,7 @@ mod tests {
 
     fn fixture() -> (TempDir, Cache) {
         let td = TempDir::new().unwrap();
-        let cache = Cache::at(td.path().join("anthropic"));
+        let cache = Cache::at(td.path().join("openrouter"));
         cache.ensure_dir().unwrap();
         (td, cache)
     }
@@ -856,7 +856,7 @@ mod tests {
     /// shape rather than the spelling: a `last_error` pair must come from
     /// [`Cache::write_last_error`], which is the only thing that redacts.
     ///
-    /// `error_to_pair` in `cursor`, `kimi` and `kiro` is untouched by this: it
+    /// Each provider's own `error_to_pair` is untouched by this: it
     /// redacts on its own and destructures as `(*status, body)`, which is not
     /// the borrowed shape a leak takes.
     #[test]
@@ -992,7 +992,7 @@ mod tests {
     }
 
     /// The regression this guards: `acquire_lock` parks the thread in a sleep
-    /// loop, so on the TUI's current-thread runtime a contended lock froze
+    /// loop, so on the binary's current-thread runtime a contended lock froze
     /// keyboard input, the refresh timer and every other vendor's fetch until
     /// it timed out. `acquire_lock_async` moves the wait to the blocking pool,
     /// so unrelated timers must keep firing while the lock is held elsewhere.

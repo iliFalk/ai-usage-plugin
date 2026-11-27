@@ -82,6 +82,16 @@ fn parse_money(s: &str, field: &str) -> Result<f64> {
     }
 }
 
+/// A balance vendor has no percentage to take a severity from, so the tier
+/// comes from the absolute amount: an unavailable account is critical
+/// regardless, and the ladder itself lives in `pacing::balance_severity`.
+pub fn severity(snap: &DeepseekSnapshot) -> crate::pacing::PaceSeverity {
+    if !snap.is_available {
+        return crate::pacing::PaceSeverity::Critical;
+    }
+    crate::pacing::balance_severity(snap.balance, &snap.currency)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

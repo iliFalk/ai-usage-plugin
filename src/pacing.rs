@@ -16,9 +16,8 @@ use chrono::{DateTime, Utc};
 /// icon. Mirrors claudebar's default `PACE_TOLERANCE=5`.
 pub const DEFAULT_TOLERANCE: u32 = 5;
 
-/// A small enum captures the three visual pace states. Keeping the icon out
-/// of strings lets the TUI render `Style`-colored chars and the widget render
-/// raw glyphs without any string parsing on the other end.
+/// The three visual pace states, kept as an enum so no caller parses a glyph
+/// back out of a string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pace {
     Ahead,
@@ -162,6 +161,45 @@ impl PaceSeverity {
             Self::High => "high",
             Self::Critical => "critical",
         }
+    }
+}
+
+/// Map a *used percentage* to a severity tier. Every panel colours a row by
+/// this, so the ladder lives once rather than in each frontend or provider.
+pub fn severity_for(pct: i32) -> PaceSeverity {
+    if pct >= 90 {
+        PaceSeverity::Critical
+    } else if pct >= 75 {
+        PaceSeverity::High
+    } else if pct >= 50 {
+        PaceSeverity::Mid
+    } else {
+        PaceSeverity::Low
+    }
+}
+
+/// Map a *remaining balance* to a severity tier — the prepaid-credit analogue
+/// of [`severity_for`], which keys on a percentage.
+///
+/// Balance vendors have no denominator to take a percentage of, so the tiers
+/// are absolute amounts and therefore currency-dependent: CNY is scaled ≈7×
+/// USD (rough parity). An unknown currency is treated as USD-scale, which is
+/// the same choice `format::with_currency` makes for an unknown code.
+/// Callers keep their own *pre*-checks — DeepSeek's `is_available` is about the
+/// account, not the amount.
+pub fn balance_severity(balance: f64, currency: &str) -> PaceSeverity {
+    let (critical, high, mid) = match currency {
+        "CNY" => (7.0_f64, 35.0, 140.0),
+        _ => (1.0_f64, 5.0, 20.0),
+    };
+    if balance < critical {
+        PaceSeverity::Critical
+    } else if balance < high {
+        PaceSeverity::High
+    } else if balance < mid {
+        PaceSeverity::Mid
+    } else {
+        PaceSeverity::Low
     }
 }
 
