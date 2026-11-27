@@ -40,6 +40,15 @@ Column {
   property var monthlyCycleDay: null
   property var monthlyCycleDayInput: null
   property bool monthlyCycleDayPending: false
+  // [notifications]: quota-threshold desktop notifications. `notifySettings`
+  // mirrors the snapshot's notify_enabled/notify_threshold (null when an older
+  // binary sent neither); the pending fields hold what the user changed.
+  property var notifySettings: null
+  property bool notifyEnabledPending: false
+  property bool notifyThresholdPending: false
+  property string notifyThresholdInput: ""
+  readonly property bool notifyThresholdValid: /^\d{1,3}$/.test(notifyThresholdInput)
+    && Number(notifyThresholdInput) >= 1 && Number(notifyThresholdInput) <= 100
   // Pending provider on/off overrides (#244), keyed by provider id. Rebuilt
   // (never mutated) so the Toggle bindings re-evaluate.
   property var vendorOverrides: ({})
@@ -57,7 +66,8 @@ Column {
   property bool saving: false
   readonly property bool canSave: !loading && !saving
     && (selectedPrimary !== "" || snapshot.primary_choices.length === 0
-        || vendorPendingCount > 0 || monthlyCycleDayPending)
+        || vendorPendingCount > 0 || monthlyCycleDayPending
+        || notifyEnabledPending || notifyThresholdPending)
 
   signal saved()
   signal fallbackRequested()
@@ -117,6 +127,10 @@ Column {
     monthlyCycleDay = parsed.monthly_cycle_day
     monthlyCycleDayInput = parsed.monthly_cycle_day
     monthlyCycleDayPending = false
+    notifySettings = parsed.notify
+    notifyEnabledPending = false
+    notifyThresholdPending = false
+    notifyThresholdInput = parsed.notify ? String(parsed.notify.threshold) : ""
   }
 
   function collectChanges() {
@@ -207,12 +221,31 @@ Column {
     vendorPendingCount = 0
   }
 
+  // Pending [notifications] change, or undefined when the user touched
+  // neither row — an unchanged form never rewrites the section.
+  function collectNotifications() {
+    if (!notifyEnabledPending && !notifyThresholdPending) return undefined
+    return {
+      enabled: notifyEnabledPending ? !notifySettings.enabled : notifySettings.enabled,
+      threshold: notifyThresholdPending ? Number(notifyThresholdInput) : notifySettings.threshold
+    }
+  }
+
+  function setNotifyEnabled(enabled) {
+    if (!notifySettings) return
+    notifyEnabledPending = enabled !== notifySettings.enabled
+  }
+
   function save() {
     if (!canSave) return
+    if (notifyThresholdPending && !notifyThresholdValid) {
+      errorText = root.tr("error.notify_threshold")
+      return
+    }
     // Only send the cycle day when the user changed it; leaving it undefined
     // keeps the existing configured value untouched.
     var cycleDay = monthlyCycleDayPending ? monthlyCycleDay : undefined
-    var built = Model.buildSettingsPatch(selectedPrimary, collectChanges(), collectVendorToggles(), cycleDay)
+    var built = Model.buildSettingsPatch(selectedPrimary, collectChanges(), collectVendorToggles(), cycleDay, collectNotifications())
     if (!built.ok) {
       errorText = built.error
       return
@@ -249,6 +282,8 @@ Column {
     // The value is now persisted; reload refreshes the snapshot (and the
     // bound monthlyCycleDay) so the pending flag can be cleared.
     monthlyCycleDayPending = false
+    notifyEnabledPending = false
+    notifyThresholdPending = false
     // load() clears stale status before refreshing the snapshot, so set the
     // confirmation afterwards and keep it visible while the refresh runs.
     statusText = root.tr("status.saved")
@@ -409,6 +444,83 @@ Column {
           monthlyCycleDayInput = value
           monthlyCycleDayPending = value !== monthlyCycleDay
         }
+      }
+    }
+  }
+
+  // Quota-threshold notifications ([notifications]). The section is hidden when
+  // the snapshot did not carry the values, so an older binary's settings form
+  // still works instead of showing a threshold nothing reads.
+  Column {
+    visible: !root.loading && root.notifySettings !== null
+    width: parent.width
+    spacing: Style.space(8)
+
+    Disclosure {
+      text: root.tr("section.notifications")
+      badge: {
+        if (!root.notifySettings) return ""
+        var enabled = root.notifyEnabledPending ? !root.notifySettings.enabled
+          : root.notifySettings.enabled
+        if (!enabled) return root.tr("status.notify_off")
+        var threshold = root.notifyThresholdPending ? root.notifyThresholdInput
+          : String(root.notifySettings.threshold)
+        return threshold + "%"
+      }
+      expanded: root.openSection === "notifications"
+      onToggled: root.toggleSection("notifications")
+    }
+    Column {
+      visible: root.openSection === "notifications"
+      width: parent.width
+      spacing: Style.space(8)
+
+      Toggle {
+        width: parent.width
+        label: root.tr("notify.enabled")
+        description: root.tr("notify.enabled_desc")
+        checked: !root.notifySettings ? false
+          : root.notifyEnabledPending ? !root.notifySettings.enabled : root.notifySettings.enabled
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        enabled: !root.saving
+        onClicked: root.setNotifyEnabled(!checked)
+      }
+
+      Text {
+        width: parent.width
+        text: root.tr("notify.threshold")
+        textFormat: Text.PlainText
+        color: root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+        font.bold: true
+      }
+      TextField {
+        width: parent.width
+        text: root.notifyThresholdInput
+        inputMethodHints: Qt.ImhDigitsOnly
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        enabled: !root.saving
+        onTextEdited: {
+          root.notifyThresholdInput = text
+          root.notifyThresholdPending = text !== String(root.notifySettings.threshold)
+        }
+        Keys.onEscapePressed: focus = false
+        onAccepted: root.save()
+      }
+      Text {
+        width: parent.width
+        text: root.notifyThresholdPending && !root.notifyThresholdValid
+          ? root.tr("notify.threshold_invalid")
+          : root.tr("notify.threshold_desc")
+        textFormat: Text.PlainText
+        color: root.notifyThresholdPending && !root.notifyThresholdValid
+          ? root.urgent : root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        wrapMode: Text.WordWrap
       }
     }
   }

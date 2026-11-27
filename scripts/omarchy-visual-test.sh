@@ -37,7 +37,7 @@ QT_QPA_PLATFORM=offscreen \
 timeout 15 quickshell -p "$scratch" --no-color \
   --log-rules 'qt.qml.connections=false'
 
-for image in settings-display-dark.png settings-credentials-light.png; do
+for image in settings-display-dark.png settings-credentials-light.png settings-notifications-dark.png; do
   if [[ ! -s "$capture_dir/$image" ]]; then
     echo "Visual scenario did not produce $image" >&2
     exit 1

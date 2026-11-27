@@ -877,6 +877,12 @@ struct SettingsSnapshot {
     /// Every known provider's on/off switch (#244) — enabled ones and
     /// disabled ones, because turning a provider on is the point.
     vendors: Vec<VendorStatus>,
+    /// `[notifications] enabled`: whether a quota window crossing the
+    /// threshold raises a desktop notification. Non-secret, so a frontend may
+    /// draw and edit it.
+    notify_enabled: bool,
+    /// `[notifications] threshold`: the percentage (1..=100) that fires it.
+    notify_threshold: u8,
     /// OpenCode Go billing-cycle reset day (1-28), when configured. The
     /// monthly window follows the subscriber's billing date, so this lets
     /// frontends compute an exact monthly window length instead of guessing
@@ -926,6 +932,12 @@ struct ApplyRequest {
     keys: BTreeMap<String, KeyMutation>,
     #[serde(default)]
     vendors: BTreeMap<String, bool>,
+    /// `[notifications] enabled`. Absent = leave untouched.
+    #[serde(default)]
+    notify_enabled: Option<bool>,
+    /// `[notifications] threshold` (1..=100). Absent = leave untouched.
+    #[serde(default)]
+    notify_threshold: Option<u8>,
     /// OpenCode Go billing-cycle reset day (1-28). Absent = leave untouched.
     #[serde(default)]
     monthly_cycle_day: Option<u8>,
@@ -987,6 +999,8 @@ fn snapshot_from_config_with(
         primary_choices,
         keys,
         vendors,
+        notify_enabled: cfg.notifications.enabled,
+        notify_threshold: cfg.notifications.threshold,
         monthly_cycle_day: cfg.opencode_go.monthly_cycle_day,
     }
 }
@@ -1081,6 +1095,23 @@ fn state_from_apply_request(cfg: &Config, raw: &str) -> Result<SettingsState> {
             enabled,
             dirty: true,
         };
+    }
+
+    // [notifications]: the same two fields the TUI overlay writes, validated
+    // here so a native frontend cannot persist a threshold the product would
+    // never accept.
+    if let Some(enabled) = request.notify_enabled {
+        state.notify_enabled = enabled;
+        state.notify_enabled_dirty = true;
+    }
+    if let Some(threshold) = request.notify_threshold {
+        if !(1..=100).contains(&threshold) {
+            return Err(AppError::Other(format!(
+                "[notifications] threshold must be between 1 and 100, got {threshold}"
+            )));
+        }
+        state.notify_threshold = KeyInput::from_config(Some(&threshold.to_string()));
+        state.notify_threshold.dirty = true;
     }
 
     if let Some(day) = request.monthly_cycle_day {
@@ -3005,6 +3036,118 @@ enabled = true
                 dirty: true
             }
         );
+    }
+
+    // ─── Quota-threshold notifications ([notifications]) ─────────────────────
+
+    #[test]
+    fn native_snapshot_reports_notification_settings() {
+        let mut cfg = Config::default();
+        let raw = settings_snapshot_json_with(&cfg, |_| false).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        // The product defaults, so a frontend shows what the bar actually does.
+        assert_eq!(parsed["notify_enabled"], true);
+        assert_eq!(parsed["notify_threshold"], 97);
+
+        cfg.notifications.enabled = false;
+        cfg.notifications.threshold = 100;
+        let raw = settings_snapshot_json_with(&cfg, |_| false).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(parsed["notify_enabled"], false);
+        assert_eq!(parsed["notify_threshold"], 100);
+    }
+
+    #[test]
+    fn native_notification_patch_writes_the_section_and_preserves_the_rest() {
+        let (_dir, path) = temp_config(Some("# keep\n[zai]\nenabled = true\napi_key = \"k\"\n"));
+        let cfg = Config::load_from(&path).unwrap();
+        let request = serde_json::json!({
+            "schema_version": 1,
+            "notify_enabled": false,
+            "notify_threshold": 88
+        });
+
+        apply_settings_json_to_path(&cfg, &request.to_string(), &path).unwrap();
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.starts_with("# keep\n"), "{raw}");
+        assert!(raw.contains("[notifications]"), "{raw}");
+        assert!(raw.contains("enabled = false"), "{raw}");
+        assert!(raw.contains("threshold = 88"), "{raw}");
+        assert!(raw.contains("api_key = \"k\""), "{raw}");
+    }
+
+    #[test]
+    fn native_patch_leaves_an_absent_notification_section_absent() {
+        let (_dir, path) = temp_config(Some("[zai]\nenabled = true\n"));
+        let cfg = Config::load_from(&path).unwrap();
+        let request = serde_json::json!({"schema_version": 1});
+
+        apply_settings_json_to_path(&cfg, &request.to_string(), &path).unwrap();
+
+        assert!(
+            !std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("[notifications]")
+        );
+    }
+
+    #[test]
+    fn native_notification_patch_refuses_a_threshold_outside_one_to_hundred() {
+        let (_dir, path) = temp_config(Some("[zai]\nenabled = true\n"));
+        let cfg = Config::load_from(&path).unwrap();
+        for bad in [0u8, 101] {
+            let request = serde_json::json!({
+                "schema_version": 1,
+                "notify_threshold": bad
+            });
+            let error = state_from_apply_request(&cfg, &request.to_string())
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("between 1 and 100"), "{bad}: {error}");
+        }
+        // A rejected patch never reaches the file.
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[zai]\nenabled = true\n"
+        );
+    }
+
+    /// The round trip a native frontend performs: send a patch, then read the
+    /// value back out of the snapshot. Apply and Show must agree, or the form
+    /// silently shows a setting it did not save.
+    #[test]
+    fn notification_settings_round_trip_through_apply_and_the_snapshot() {
+        let (_dir, path) = temp_config(Some("[notifications]\nenabled = true\nthreshold = 97\n"));
+        let cfg = Config::load_from(&path).unwrap();
+        let request = serde_json::json!({
+            "schema_version": 1,
+            "notify_enabled": false,
+            "notify_threshold": 42
+        });
+
+        apply_settings_json_to_path(&cfg, &request.to_string(), &path).unwrap();
+
+        let reloaded = Config::load_from(&path).unwrap();
+        let raw = settings_snapshot_json_with(&reloaded, |_| false).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(parsed["notify_enabled"], false);
+        assert_eq!(parsed["notify_threshold"], 42);
+    }
+
+    /// A patch carrying only a notification change is a complete patch — the
+    /// form must not be forced to re-send the primary provider or a credential.
+    #[test]
+    fn native_notification_patch_alone_is_a_valid_patch() {
+        let cfg = Config::default();
+        let request = serde_json::json!({
+            "schema_version": 1,
+            "notify_threshold": 90
+        });
+        let state = state_from_apply_request(&cfg, &request.to_string()).unwrap();
+        assert_eq!(state.notify_threshold.buf, "90");
+        assert!(state.notify_threshold.dirty);
+        assert!(!state.notify_enabled_dirty);
     }
 
     // ─── Overlay scroll (#244: the body outgrew small terminals) ────────────

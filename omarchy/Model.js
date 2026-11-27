@@ -1780,17 +1780,29 @@ function parseSettingsSnapshot(raw) {
       }
     }
     if (!primaryAvailable) primary = choices.length > 0 ? choices[0].id : ""
-    return { ok: true, error: "", primary: primary, primary_choices: choices, keys: keys, vendors: vendors }
+
+    // Quota-threshold notifications ([notifications]). Both values must be
+    // well formed or the section stays hidden: a made-up default would show a
+    // threshold the bar is not using. An older binary sends neither.
+    var notifyThreshold = parsed.notify_threshold
+    var notify = null
+    if ((parsed.notify_enabled === true || parsed.notify_enabled === false)
+        && typeof notifyThreshold === "number" && Number.isInteger(notifyThreshold)
+        && notifyThreshold >= 1 && notifyThreshold <= 100)
+      notify = { enabled: parsed.notify_enabled, threshold: notifyThreshold }
+
+    return { ok: true, error: "", primary: primary, primary_choices: choices, keys: keys, vendors: vendors, notify: notify }
   } catch (error) {
-    return { ok: false, error: "The settings command returned invalid JSON.", primary: "", primary_choices: [], keys: [], vendors: [] }
+    return { ok: false, error: "The settings command returned invalid JSON.", primary: "", primary_choices: [], keys: [], vendors: [], notify: null }
   }
 }
 
 // Build the stdin patch for `settings apply`. `vendorToggles` (#244) is an
 // optional array of {id, enabled}; it is included in the payload only when a
 // toggle is pending, so a display-only save keeps the older patch shape a
-// pre-#244 binary still accepts.
-function buildSettingsPatch(primary, changes, vendorToggles, monthlyCycleDay) {
+// pre-#244 binary still accepts. `notifications` follows the same rule: an
+// optional {enabled, threshold} that is sent only when the user changed it.
+function buildSettingsPatch(primary, changes, vendorToggles, monthlyCycleDay, notifications) {
   var primaryId = settingsId(primary)
   var rawPrimary = String(primary || "").trim()
   if (rawPrimary !== "" && primaryId === "")
@@ -1832,13 +1844,24 @@ function buildSettingsPatch(primary, changes, vendorToggles, monthlyCycleDay) {
             || monthlyCycleDay < 1 || monthlyCycleDay > 28))
       return { ok: false, error: "Monthly cycle day must be null or an integer between 1 and 28.", payload: "" }
   }
+  if (notifications !== undefined) {
+    if (!notifications
+        || (notifications.enabled !== true && notifications.enabled !== false)
+        || typeof notifications.threshold !== "number" || !Number.isInteger(notifications.threshold)
+        || notifications.threshold < 1 || notifications.threshold > 100)
+      return { ok: false, error: "The notification threshold must be a whole number between 1 and 100.", payload: "" }
+  }
   if (primaryId === "" && seen.length === 0 && seenVendors.length === 0
-      && monthlyCycleDay === undefined)
+      && monthlyCycleDay === undefined && notifications === undefined)
     return { ok: false, error: "There are no settings changes to save.", payload: "" }
   var patch = { schema_version: 1, keys: keys }
   if (primaryId !== "") patch.primary = primaryId
   if (seenVendors.length > 0) patch.vendors = vendors
   if (monthlyCycleDay !== undefined) patch.monthly_cycle_day = monthlyCycleDay
+  if (notifications !== undefined) {
+    patch.notify_enabled = notifications.enabled
+    patch.notify_threshold = notifications.threshold
+  }
   return {
     ok: true,
     error: "",

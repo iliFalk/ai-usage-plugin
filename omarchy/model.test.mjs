@@ -518,6 +518,13 @@ assert.match(
   settingsViewSource,
   /Model\.buildSettingsPatch\(selectedPrimary,\s*collectChanges\(\),\s*collectVendorToggles\(\)\s*(,\s*.*)?\)/
 );
+// Quota-threshold notifications ([notifications]): the section is bound to the
+// snapshot's notify values and saves through the same stdin patch.
+assert.match(settingsViewSource, /text:\s*root\.tr\("section\.notifications"\)/);
+assert.match(settingsViewSource, /root\.tr\("notify\.enabled"\)/);
+assert.match(settingsViewSource, /root\.notifySettings/);
+assert.match(settingsViewSource, /function\s+collectNotifications\s*\(/);
+assert.match(settingsViewSource, /collectNotifications\(\)\)/);
 assert.match(settingsViewSource, /root\.tr\("credentials\.paste"/);
 assert.match(panelSource, /function\s+openNousLogin\s*\(/);
 assert.match(panelSource, /ai-usagebar auth nous login/);
@@ -1170,6 +1177,44 @@ assert.equal(model.buildSettingsPatch('', [], [{id: 'grok'}, {id: 'grok', enable
 assert.equal(model.buildSettingsPatch('', [], [{id: 'grok', enabled: true}, {id: 'grok', enabled: false}]).ok, false);
 assert.equal(model.buildSettingsPatch('', [], [{id: 'grok', enabled: 'on'}]).ok, false);
 assert.equal(model.buildSettingsPatch('', [], []).ok, false);
+
+// Quota-threshold notifications ([notifications]): the snapshot carries the
+// switch and the threshold, an older binary's snapshot leaves the section
+// hidden, and the patch gains the two keys only when something changed.
+const notifySnapshot = model.parseSettingsSnapshot(JSON.stringify({
+  schema_version: 1, primary: 'anthropic', primary_choices: [], keys: [],
+  notify_enabled: false, notify_threshold: 90
+}));
+assert.equal(notifySnapshot.ok, true);
+// Cross-realm object, so compare fields rather than prototypes.
+assert.equal(notifySnapshot.notify.enabled, false);
+assert.equal(notifySnapshot.notify.threshold, 90);
+const noNotify = model.parseSettingsSnapshot(JSON.stringify({
+  schema_version: 1, primary: 'anthropic', primary_choices: [], keys: []
+}));
+assert.equal(noNotify.ok, true);
+assert.equal(noNotify.notify, null);
+assert.equal(model.parseSettingsSnapshot('{').notify, null);
+// A malformed value hides the section rather than inventing a threshold the
+// bar is not using.
+for (const bad of [0, 101, '90', 90.5, null, undefined]) {
+  const parsed = model.parseSettingsSnapshot(JSON.stringify({
+    schema_version: 1, primary: 'anthropic', primary_choices: [], keys: [],
+    notify_enabled: true, notify_threshold: bad
+  }));
+  assert.equal(parsed.notify, null, `notify_threshold ${String(bad)}`);
+}
+const notifyPatch = model.buildSettingsPatch('', [], [], undefined, {enabled: false, threshold: 100});
+assert.equal(notifyPatch.ok, true);
+assert.deepEqual(JSON.parse(notifyPatch.payload), {
+  schema_version: 1, keys: {}, notify_enabled: false, notify_threshold: 100
+});
+assert.equal(model.buildSettingsPatch('', [], [], undefined, {threshold: 90}).ok, false);
+assert.equal(model.buildSettingsPatch('', [], [], undefined, {enabled: true, threshold: 0}).ok, false);
+assert.equal(model.buildSettingsPatch('', [], [], undefined, {enabled: true, threshold: 101}).ok, false);
+assert.equal(model.buildSettingsPatch('', [], [], undefined, {enabled: true, threshold: 90.5}).ok, false);
+// Nothing pending anywhere is still refused.
+assert.equal(model.buildSettingsPatch('', [], [], undefined, undefined).ok, false);
 
 // Top bar window pinning: auto keeps history, session/weekly/monthly pin one
 // window class, unknown pins fall back to highest instead of blanking.
@@ -2141,8 +2186,8 @@ assert.equal(model.cursorPoolOf(null), '');
   assert.match(panel, /readonly property var valueView:\s*Model\.metricValueView\(row,\s*root\.showAs\)/);
   assert.match(settingsForm, /property string openSection:\s*"display"/);
   assert.match(settingsForm, /function toggleSection\(id\) \{\s*openSection = openSection === id \? "" : id\s*\}/);
-  assert.equal((settingsForm.match(/^    Disclosure \{/gm) || []).length, 8);
-  for (const id of ['display', 'language', 'barWindow', 'showAs', 'metrics', 'primary', 'providers', 'credentials']) {
+  assert.equal((settingsForm.match(/^    Disclosure \{/gm) || []).length, 9);
+  for (const id of ['display', 'notifications', 'language', 'barWindow', 'showAs', 'metrics', 'primary', 'providers', 'credentials']) {
     assert.match(settingsForm, new RegExp(`onToggled: root\\.toggleSection\\("${id}"\\)`), `${id} folds`);
     assert.match(settingsForm, new RegExp(`visible: root\\.openSection === "${id}"`), `${id} body`);
   }
