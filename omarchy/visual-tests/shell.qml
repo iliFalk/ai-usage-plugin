@@ -122,35 +122,36 @@ ShellRoot {
         showAll: false
         colorCodeUsage: true
         brandIcons: true
-        selectedPrimary: "anthropic"
+        selectedPrimary: "opencode-go"
         barProviderChoices: [
-          { id: "anthropic", name: "Claude", checked: true },
-          { id: "openai", name: "Codex", checked: true },
-          { id: "openrouter", name: "OpenRouter", checked: false }
+          { id: "opencode-go", name: "OpenCode Go", checked: true },
+          { id: "openrouter", name: "OpenRouter", checked: true },
+          { id: "deepseek", name: "DeepSeek", checked: false }
         ]
         metricEntries: [
-          { id: "anthropic", name: "Claude", rows: [
-            { key: "window:session", label: "Session", labelKey: "", group: "", checked: true, canToggle: true },
-            { key: "window:weekly", label: "Weekly", labelKey: "", group: "", checked: true, canToggle: true }
+          { id: "opencode-go", name: "OpenCode Go", rows: [
+            { key: "Rolling (5h)", label: "Rolling (5h)", group: "", checked: true, canToggle: true },
+            { key: "Weekly (7d)", label: "Weekly (7d)", group: "", checked: true, canToggle: true },
+            { key: "Monthly", label: "Monthly", group: "", checked: true, canToggle: true }
           ] }
         ]
         snapshot: ({
           primary_choices: [
-            { id: "anthropic", value: "anthropic", label: "Claude" },
-            { id: "openai", value: "openai", label: "Codex" },
-            { id: "openrouter", value: "openrouter", label: "OpenRouter" }
+            { id: "opencode-go", value: "opencode-go", label: "OpenCode Go" },
+            { id: "openrouter", value: "openrouter", label: "OpenRouter" },
+            { id: "deepseek", value: "deepseek", label: "DeepSeek" }
           ],
           vendors: [
-            { id: "anthropic", label: "Claude", enabled: true },
-            { id: "openai", label: "Codex", enabled: true },
-            { id: "openrouter", label: "OpenRouter", enabled: false }
+            { id: "opencode-go", label: "OpenCode Go", enabled: true },
+            { id: "openrouter", label: "OpenRouter", enabled: true },
+            { id: "deepseek", label: "DeepSeek", enabled: false }
           ],
           keys: [
-            { id: "openrouter", label: "OpenRouter", environment: "OPENROUTER_API_KEY",
-              secret_label: "API key", note: "Optional explicit credential",
+            { id: "opencode-go", label: "OpenCode Go", environment: "OPENCODE_GO_API_KEY",
+              secret_label: "API key", note: "usage quota",
               configured: true, inline_configured: true, environment_configured: false },
-            { id: "zai", label: "Z.AI", environment: "ZAI_API_KEY",
-              secret_label: "API key", note: "Usage API access",
+            { id: "deepseek", label: "DeepSeek", environment: "DEEPSEEK_API_KEY",
+              secret_label: "API key", note: "",
               configured: false, inline_configured: false, environment_configured: false }
           ]
         })
