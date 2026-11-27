@@ -34,20 +34,14 @@
       "showAll": false,
       "uiLocale": "auto",
       "barWindow": "auto",
-      "showAs": "used",
-      "showCursorModels": true,
-      "showCursorOther": true,
-      "showCursorOnDemand": true,
-      "showCursorCredits": true,
-      "showAntigravityGemini": true,
-      "showAntigravityClaudeGpt": true
+      "showAs": "used"
     },
     "schema": [
       {
         "key": "provider",
         "type": "string",
         "label": "Provider or account id",
-        "description": "Optional id from ai-usagebar usage --json (for example openai or anthropic@work). Leave blank to switch between all configured entries.",
+        "description": "Optional id from ai-usagebar usage --json (for example openrouter or deepseek@work). Leave blank to switch between all configured entries.",
         "defaultValue": ""
       },
       {
@@ -77,7 +71,7 @@
         "key": "showProvider",
         "type": "boolean",
         "label": "Show provider name",
-        "description": "Show the selected provider's short code (cld, gpt, zai, agy) before the usage value, the way Waybar's {vendor_short} does. Off by default.",
+        "description": "Show the selected provider's short code (ocg, opr, dsk) before the usage value. Off by default.",
         "defaultValue": false
       },
       {
@@ -132,48 +126,6 @@
           "left"
         ],
         "defaultValue": "used"
-      },
-      {
-        "key": "showCursorModels",
-        "type": "boolean",
-        "label": "Show Cursor Models",
-        "description": "Show the Cursor Models pool in the top bar and tooltip. The panel header and list drop it too. At least one Cursor pool stays visible.",
-        "defaultValue": true
-      },
-      {
-        "key": "showCursorOther",
-        "type": "boolean",
-        "label": "Show Other Models",
-        "description": "Show the Other Models pool in the top bar and tooltip. The panel header and list drop it too. At least one Cursor pool stays visible.",
-        "defaultValue": true
-      },
-      {
-        "key": "showCursorOnDemand",
-        "type": "boolean",
-        "label": "Show On-Demand",
-        "description": "Show prepaid on-demand usage in the top bar and tooltip. The panel header and list drop it too. At least one Cursor pool stays visible.",
-        "defaultValue": true
-      },
-      {
-        "key": "showCursorCredits",
-        "type": "boolean",
-        "label": "Show Credits",
-        "description": "Show a spending-page credit grant in the top bar and tooltip. The panel header and list drop it too. Hidden when the account has no grant. At least one Cursor figure stays visible.",
-        "defaultValue": true
-      },
-      {
-        "key": "showAntigravityGemini",
-        "type": "boolean",
-        "label": "Show Gemini",
-        "description": "Show the Gemini pool in the top bar and tooltip. The panel list drops its Session and Weekly rows too. At least one Antigravity pool stays visible.",
-        "defaultValue": true
-      },
-      {
-        "key": "showAntigravityClaudeGpt",
-        "type": "boolean",
-        "label": "Show Claude & GPT OSS",
-        "description": "Show the Claude & GPT OSS pool in the top bar and tooltip. The panel list drops its Session and Weekly rows too. At least one Antigravity pool stays visible.",
-        "defaultValue": true
       }
     ]
   }

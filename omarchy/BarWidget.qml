@@ -75,11 +75,6 @@ BarWidget {
     if (panelItem) panelItem.selectAdjacentBarEntry(1)
   }
 
-  function launchDashboard() {
-    if (root.bar) root.bar.run("omarchy-launch-floating-terminal-with-presentation ai-usagebar-tui")
-    root.close()
-  }
-
   function injectPanel() {
     var target = panelItem
     if (!target) return
@@ -89,25 +84,12 @@ BarWidget {
     if ("hostWidget" in target) target.hostWidget = root
   }
 
-  function segmentColor(severity) {
-    // Colour-coding on: full RAG. Off: only critical segments take the
-    // classic alarm tint so "34% · 100%" paints just the exhausted pool red.
-    if (root.colorCodeUsage) {
-      if (!severity) return button.foreground
-      if (root.panelItem && typeof root.panelItem.severityColorOf === "function")
-        return root.panelItem.severityColorOf(severity)
-      return button.foreground
-    }
-    return severity === "critical" ? root.alarmColor(true) : button.foreground
-  }
-
   function alarmColor(isAlarming) {
     return isAlarming && button.useActiveColor ? button.activeColor : button.foreground
   }
 
   // Icon tint:
-  // - colour-coding on: full RAG from worst visible pool (max used / min
-  //   remaining) — status highest-severity aggregate, never an average.
+  // - colour-coding on: full RAG from the headline severity, never an average.
   // - colour-coding off: the chip's own alarm flag (highest percent across
   //   windows), binary white/foreground vs red, as before the feature.
   function chipIconColor(chip) {
@@ -120,9 +102,9 @@ BarWidget {
     return chip && chip.alarming ? root.alarmColor(true) : button.foreground
   }
 
-  // Non-Cursor chip value with colour-coding on: the headline severity paints
-  // the label, so a critical bar value keeps its red. A chip without a
-  // severity keeps the plain foreground.
+  // Chip value with colour-coding on: the headline severity paints the label,
+  // so a critical bar value keeps its red. A chip without a severity keeps the
+  // plain foreground.
   function chipValueColor(chip) {
     var sev = chip && chip.severity ? String(chip.severity) : ""
     if (sev !== "" && root.panelItem && typeof root.panelItem.severityColorOf === "function")
@@ -174,8 +156,8 @@ BarWidget {
       if (colorOn && sev && root.panelItem && typeof root.panelItem.severityHexOf === "function")
         hex = String(root.panelItem.severityHexOf(sev) || "")
       else if (!colorOn && sev === "critical")
-        // Classic mode: only the depleted pool is red, so the tip explains
-        // why the tray mark is lit without turning on full RAG.
+        // Classic mode: only a critical value is red, so the tip explains why
+        // the bar mark is lit without turning on full RAG.
         hex = String(_r || "")
       if (hex !== "") {
         anyColor = true
@@ -247,7 +229,7 @@ BarWidget {
 
   // Full-width open-panel underline (Bar.qml openPanelIndicator). Without
   // this hint the bar only paints ~55% of the slot, which looks short once
-  // Cursor shows several percentage chips.
+  // the bar shows a chip per provider.
   readonly property real openPanelIndicatorWidth: Math.max(1, Math.round(button.implicitWidth))
   readonly property real openPanelIndicatorHeight: Math.max(1, Math.round(button.implicitHeight))
 
@@ -280,7 +262,7 @@ BarWidget {
     hasVisualContent: true
     fontSize: Style.font.bodySmall
     // Classic alarm chrome when colour-coding is off; with colour-coding on,
-    // per-pool RAG colours carry the signal instead (#278 / #292).
+    // the RAG colours carry the signal instead (#278 / #292).
     active: !root.colorCodeUsage && root.alarming
     // Empty while the colored PopupWindow owns the tip; otherwise plain text
     // for the bar's native tooltip (startup / no RAG rows).
@@ -291,8 +273,7 @@ BarWidget {
 
     onPressed: function(buttonCode) {
       root.armClickLock()
-      if (buttonCode === Qt.RightButton) root.launchDashboard()
-      else if (buttonCode === Qt.MiddleButton) root.nextEntry()
+      if (buttonCode === Qt.MiddleButton) root.nextEntry()
       else root.toggle()
     }
 
@@ -335,8 +316,7 @@ BarWidget {
           // buttons keep their panel-wide meaning.
           function triggerPress(buttonCode) {
             root.armClickLock()
-            if (buttonCode === Qt.RightButton) root.launchDashboard()
-            else if (buttonCode === Qt.MiddleButton) root.nextEntry()
+            if (buttonCode === Qt.MiddleButton) root.nextEntry()
             else if (root.panelItem) root.panelItem.openEntry(chipHit.chip.id || "")
           }
 
@@ -358,48 +338,15 @@ BarWidget {
               anchors.verticalCenter: parent.verticalCenter
               brand: chipHit.chip.brand || ""
               fallback: chipHit.chip.icon || "󰚩"
-              // Colour-coding: full RAG from worst pool. Off: same aggregate,
-              // binary foreground vs red when worst is critical.
+              // Colour-coding: full RAG. Off: binary foreground vs red when
+              // the summary is critical.
               foreground: root.chipIconColor(chipHit.chip)
               fontFamily: button.fontFamily
               fontSize: button.fontSize
             }
 
             Text {
-              visible: !!(chipHit.chip.segments && chipHit.chip.segments.length > 0
-                && chipHit.chip.providerPrefix)
-              anchors.verticalCenter: parent.verticalCenter
-              textFormat: Text.PlainText
-              text: chipHit.chip.providerPrefix || ""
-              color: root.colorCodeUsage
-                ? button.foreground
-                : root.alarmColor(!!chipHit.chip.alarming)
-              font.family: button.fontFamily
-              font.pixelSize: button.fontSize
-            }
-
-            Row {
-              anchors.verticalCenter: parent.verticalCenter
-              spacing: 0
-              visible: !!(chipHit.chip.segments && chipHit.chip.segments.length > 0)
-
-              Repeater {
-                model: chipHit.chip.segments || []
-
-                Text {
-                  anchors.verticalCenter: parent.verticalCenter
-                  textFormat: Text.PlainText
-                  text: modelData.text || ""
-                  color: root.segmentColor(modelData.severity || "")
-                  font.family: button.fontFamily
-                  font.pixelSize: button.fontSize
-                }
-              }
-            }
-
-            Text {
-              visible: !(chipHit.chip.segments && chipHit.chip.segments.length > 0)
-                && chipHit.chip.label !== ""
+              visible: chipHit.chip.label !== ""
               anchors.verticalCenter: parent.verticalCenter
               textFormat: Text.PlainText
               text: chipHit.chip.label || ""

@@ -14,8 +14,8 @@
 //! access token. Refresh remains the CLI's responsibility.
 //!
 //! This module reads both stores read-only and never writes, copies, or caches
-//! the key, exactly like anthropic, cursor, kiro, and devin treat the
-//! credential store the official CLI already wrote. Legacy JSON entries must
+//! the key: the credential store belongs to the official CLI that wrote it.
+//! Legacy JSON entries must
 //! declare an `api`/`zen` key; their OAuth and well-known shapes are unchanged.
 //! Only SQLite OAuth entries supply an access token through the v2 reader.
 
@@ -499,7 +499,7 @@ mod tests {
         let wellknown = write(
             dir.path(),
             "wellknown.json",
-            serde_json::json!({"opencode": {"type": "wellknown", "key": "OPENAI_API_KEY", "token": "sk-real"}}),
+            serde_json::json!({"opencode": {"type": "wellknown", "key": "GEMINI_API_KEY", "token": "sk-real"}}),
         );
         assert!(read_key_from(&wellknown).is_none());
     }

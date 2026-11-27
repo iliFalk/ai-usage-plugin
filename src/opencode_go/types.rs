@@ -89,6 +89,35 @@ fn parse_window(value: &Value, name: &str) -> Result<Window, String> {
     })
 }
 
+/// The worst of the three windows' percentages decides the tier.
+pub fn severity(usage: &Usage) -> crate::pacing::PaceSeverity {
+    usage
+        .rolling
+        .iter()
+        .chain(usage.weekly.iter())
+        .chain(usage.monthly.iter())
+        .map(|window| window.percent as i32)
+        .max()
+        .map(crate::pacing::severity_for)
+        .unwrap_or(crate::pacing::PaceSeverity::Low)
+}
+
+/// Window lengths for pacing math. The usage endpoint reports only `status`,
+/// `percent`, and `resetsAt` — never a duration — so these are constants with
+/// a recorded provenance:
+/// - `rolling` is the 5-hour limit (upstream `formatUsage` + "5-hour usage
+///   limit reached" in the official CLI's messages, validated live via
+///   `GET https://opencode.ai/zen/go/v1/usage`).
+/// - `weekly` resets Monday 00:00 UTC (7 days, same response capture).
+///
+/// There is deliberately no monthly constant: the monthly window follows the
+/// subscription cycle (28/29/31 days depending on the subscriber), so any
+/// fixed length would pace against a wrong denominator. The monthly reset is
+/// still shown; only pacing is omitted until the API reports real cycle
+/// bounds.
+pub const ROLLING_WINDOW: chrono::Duration = chrono::Duration::hours(5);
+pub const WEEKLY_WINDOW: chrono::Duration = chrono::Duration::days(7);
+
 #[cfg(test)]
 mod tests {
     use super::*;

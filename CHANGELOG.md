@@ -3,10 +3,45 @@
 ### Added
 
 - **The Omarchy panel sets the quota notifications.** Settings → Notifications
-  carries the enable switch and the threshold, the same two fields the TUI
-  overlay writes; the threshold is accepted only in 1..=100, checked in Rust
-  before anything is persisted. Until now both lived in `config.toml` only,
-  and the panel could neither show nor change them.
+  carries the enable switch and the threshold; the threshold is accepted only
+  in 1..=100, checked in Rust before anything is persisted. Until now both lived
+  in `config.toml` only, and the panel could neither show nor change them.
+
+### Removed
+
+- **Every surface except the Omarchy panel.** The Waybar widget
+  (`src/widget/`, `--format`/`--tooltip-format`/`--watch`/`--pretty` and the
+  whole `{placeholder}` contract), the tabbed TUI (`src/tui/`,
+  `ai-usagebar-tui`), the macOS and Windows system-tray popover (`src/tray/`,
+  `ai-usagebar-tray`), the macOS menu-bar mirror, the GNOME Shell extension, the
+  KDE Plasma plasmoid, the Linux Mint tray, and the Claude Code mod are gone
+  along with their tests, screenshots, packaging and CI jobs. The Omarchy
+  Quattro plugin is the only frontend, and `ai-usagebar` the only binary.
+- **Every provider except OpenCode Go, OpenRouter and DeepSeek.** Anthropic
+  (Claude CLI and admin API), Codex/OpenAI, GitHub Copilot, Z.AI, Google
+  Antigravity, Cursor, Kiro, Kimi, Moonshot, MiniMax, Grok, SuperGrok, Grok Bot,
+  Nous Research, Command Code, Cline, Devin, Droid, Muse Code, Ollama Cloud,
+  Alibaba Model Studio, DeepInfra, Novita, Kilo, Lyceum, OrcaRouter, Synthetic,
+  user-defined `[[custom]]` providers and the Claude Desktop integration are
+  removed with their config sections, credentials, caches, endpoints, tests and
+  documentation. A `config.toml` that still names one of those sections now
+  fails to parse with the offending section named, rather than silently
+  ignoring it.
+- **The CLI surface they carried.** `--vendor`, `--account`, `--json` as a bare
+  flag, `--watch`, `account`, `auth`, `antigravity`, `detect`, `vendors`, `mcp`
+  and `opencode-go month-start` are gone; `usage` (`--json`) and `settings`
+  (`show`/`apply`) are the whole command set. `settings enable` is gone with
+  provider auto-detection.
+- **Claude Code context scanning**, the MCP server, the self-updater, and the
+  Waybar cache-refresh signal (`SIGUSR2`) had no consumer left and are removed.
+- **Per-surface provider UI.** The panel's Cursor and Antigravity settings
+  (`showCursorModels`, `showCursorOther`, `showCursorOnDemand`,
+  `showCursorCredits`, `showAntigravityGemini`, `showAntigravityClaudeGpt`), the
+  TUI launch button and the Nous login button are gone from the panel and from
+  `manifest.json`, in every locale.
+- **`packaging/scoop/`**, the Windows/macOS release matrix, the crates.io
+  publish job and the platform-specific build docs are removed with those
+  surfaces.
 
 ## [1.45.0] — 2026-10-27
 

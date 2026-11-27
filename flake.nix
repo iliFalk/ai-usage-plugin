@@ -1,5 +1,5 @@
 {
-  description = "AI plan usage for Waybar, Omarchy, and the terminal";
+  description = "AI plan usage for the Omarchy panel: OpenCode Go, DeepSeek, OpenRouter";
 
   # Keep updates on the maintained final release branch for x86_64-darwin.
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-26.05-darwin";
@@ -38,10 +38,6 @@
           default = {
             type = "app";
             program = nixpkgs.lib.getExe package;
-          };
-          tui = {
-            type = "app";
-            program = nixpkgs.lib.getExe' package "ai-usagebar-tui";
           };
         }
       );

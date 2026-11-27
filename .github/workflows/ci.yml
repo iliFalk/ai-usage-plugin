@@ -1,7 +1,8 @@
 name: CI
 
-# Cross-platform test signal for PRs and main. Linux carries the strict quality
-# gate, macOS also compiles the native menu app, and Windows runs natively.
+# Test signal for PRs and main. One Linux job carries the strict quality gate —
+# the panel ships on Omarchy, so that is the platform that matters — plus the
+# Nix flake and the declared MSRV.
 on:
   push:
     branches: [main]
@@ -16,9 +17,6 @@ permissions:
   contents: read
 
 jobs:
-  # The platform the widget actually ships on. Until this existed, Linux was
-  # only exercised *after* a tag was pushed — by which point the tag is
-  # immutable and a failure costs a new patch release.
   linux:
     name: test (ubuntu-latest)
     runs-on: ubuntu-latest
@@ -35,9 +33,6 @@ jobs:
             echo "::error::Changelog validation requires a full-history checkout."
             exit 1
           fi
-          # No v* tag in this repository yet: the script says so and exits 0.
-          # Do not gate on tags here — that turns an absent release history
-          # into a red build on every PR.
           make changelog-check
 
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
@@ -55,42 +50,17 @@ jobs:
       - name: Test
         run: cargo test --all-targets --locked
 
-      - name: Test desktop integration models
-        run: make desktop-test
-
-      # The NativeDashboard SSR contract test needs vite, so it runs here (npm is
-      # guaranteed on ubuntu) rather than in the bare-node desktop-test gate.
-      - name: Test the popover SSR screens
-        run: make popover-ssr-test
-
-      # The Omarchy model contract was only ever run by `make test` locally,
-      # so changes to omarchy/Model.js reached main unverified. Node-only,
-      # like desktop-test.
+      # The panel's contract tests: the report model, the settings patch and the
+      # QML source contracts. Node-only.
       - name: Test Omarchy plugin model
         run: make plugin-test
-
-      - name: Test Linux Mint tray model
-        run: make mint-test
-
-      - name: Test Linux Mint GTK and IPC regressions
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y python3-gi gir1.2-gtk-3.0 gir1.2-gdkx11-3.0 gir1.2-xapp-1.0
-          make mint-runtime-test
 
       - name: Unused dependencies
         uses: bnjbvr/cargo-machete@a84eadc0a20e522e37a502609e97a7ce30c998ed # v0.10.0
 
-  # The declared minimum is set by the macOS/Windows tray dependencies
-  # (tray-icon, muda), which a Linux build never compiles, so it is checked
-  # on every platform that builds them.
   msrv:
-    name: test (rust 1.90, ${{ matrix.runner }})
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.runner }}
+    name: test (rust 1.90, ubuntu-latest)
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -100,7 +70,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
         with:
-          key: msrv-1.90.0-${{ matrix.runner }}
+          key: msrv-1.90.0
 
       - name: Check declared minimum Rust version
         run: cargo check --all-targets --locked
@@ -115,8 +85,6 @@ jobs:
             runner: ubuntu-24.04
           - system: aarch64-linux
             runner: ubuntu-24.04-arm
-          - system: aarch64-darwin
-            runner: macos-15
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -126,90 +94,5 @@ jobs:
       - name: Build and test the flake
         run: nix flake check --print-build-logs
 
-      - name: Smoke-test app outputs
-        env:
-          NIX_SYSTEM: ${{ matrix.system }}
-        run: |
-          nix run .#default -- --version
-          tui_program="$(nix eval --raw ".#apps.${NIX_SYSTEM}.tui.program")"
-          test -x "$tui_program"
-
-  macos:
-    name: test (macos-latest)
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          fetch-tags: true
-
-      # Same gate as Linux, under BSD sed: maintainers run it locally on macOS
-      # before tagging, and a GNU-only expression would otherwise pass CI.
-      - name: Published changelog sections and versions are intact (BSD sed)
-        run: make changelog-check
-
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-        with:
-          components: clippy
-
-      - uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
-
-      # Ships with `-D warnings` like Linux. Each platform compiles a different
-      # slice of this crate — the macOS Keychain fallback, the Windows process
-      # and TCP-table walk — and a lint on the slice the Linux job never sees
-      # is a lint nobody sees.
-      - name: Clippy
-        run: cargo clippy --all-targets --locked -- -D warnings
-
-      - name: Test
-        run: cargo test --all-targets --locked
-
-      # Legacy Swift menu (NSMenu). The product UI is `ai-usagebar-tray`
-      # (WKWebView popover), compiled by clippy --all-targets above.
-      - name: Build the menu bar app
-        run: swiftc -O -parse-as-library -o /tmp/ai-usagebar-menubar macos/ai-usagebar-menubar.swift
-
-      - name: Run the menu bar test harness
-        run: ./macos/run-tests.sh
-
-      - name: Package the tray app bundle
-        run: python3 -m unittest discover -s macos -p 'test_package_app.py'
-
-  windows:
-    name: test (windows-latest)
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-        with:
-          components: clippy
-
-      - uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
-
-      # ring assembles its primitives on x86_64 and needs nasm; the runner does
-      # not ship it on PATH. No-op if a future image already provides it.
-      - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1
-
-      - name: Clippy
-        run: cargo clippy --all-targets --locked -- -D warnings
-
-      - name: Test
-        run: cargo test --all-targets --locked
-
-      # Same guard as the release workflow: a debug tray embedding the
-      # no-npm stub here means the npm probe or the Vite build broke (#229).
-      - name: "Guard: tray must embed the dashboard, not the stub"
-        shell: pwsh
-        run: |
-          $exe = 'target/debug/ai-usagebar-tray.exe'
-          if (Select-String -Path $exe -Pattern 'popover dist missing' -Quiet) {
-            Write-Host "::error::$exe embeds the placeholder popover — build.rs took the no-npm stub path (#229)"
-            exit 1
-          }
-
-      - name: Test KDE plasmoid logic
-        run: node kde-plasmoid/plasmoid-logic.test.mjs
-
-      - name: Test Windows popover model
-        run: node windows/popover/popover.test.mjs
+      - name: Smoke-test the app output
+        run: nix run .#default -- --version

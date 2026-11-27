@@ -1,8 +1,7 @@
-//! Waybar widget binary. The library does all the work — this is just the
+//! `ai-usagebar` binary. The library does all the work — this is just the
 //! tokio bootstrap + clap parse.
 
-use ai_usagebar::widget::cli::{AuthProvider, Cli, Command, NousAuthAction};
-use ai_usagebar::widget::run::run;
+use ai_usagebar::cli::{Cli, Command};
 use clap::Parser;
 
 fn main() {
@@ -27,83 +26,33 @@ fn main() {
         }
         ai_usagebar::config::set_override_path(path);
     }
-    if let Some(Command::Account { action }) = &cli.command {
-        std::process::exit(ai_usagebar::account::run(action));
-    }
-    if let Some(Command::Antigravity { action }) = &cli.command {
-        std::process::exit(ai_usagebar::antigravity::statusline::run(action));
-    }
-    if let Some(Command::Settings { action }) = &cli.command {
-        std::process::exit(ai_usagebar::tui::settings::run_cli(action));
-    }
-    if let Some(Command::Detect { all, json }) = &cli.command {
-        std::process::exit(ai_usagebar::detect::run_cli(*all, *json));
-    }
 
-    // Static catalog: it reads config and the filesystem, never the network,
-    // so it needs no tokio runtime and must not go through the always-exit-0
-    // Waybar contract.
-    if let Some(Command::Vendors { json }) = &cli.command {
-        std::process::exit(ai_usagebar::catalog::run(*json));
-    }
-    if let Some(Command::Auth { provider }) = &cli.command {
-        let rt = match tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-        {
-            Ok(rt) => rt,
-            Err(_) => std::process::exit(1),
-        };
-        let code = match provider {
-            AuthProvider::Nous { action } => rt.block_on(run_nous_auth(action)),
-        };
-        std::process::exit(code);
-    }
-    if matches!(&cli.command, Some(Command::Mcp)) {
-        let rt = match tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-        {
-            Ok(rt) => rt,
-            Err(error) => {
-                // stdout belongs exclusively to MCP framing.
-                eprintln!("ai-usagebar mcp: failed to create runtime: {error}");
-                std::process::exit(1);
-            }
-        };
-        std::process::exit(rt.block_on(ai_usagebar::mcp::run()));
-    }
     let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
     {
         Ok(rt) => rt,
-        Err(_) => {
-            // Catastrophic — emit the always-valid ⚠ JSON and exit 0.
-            println!(
-                r#"{{"text":"⚠","tooltip":"failed to create tokio runtime","class":"critical"}}"#
-            );
-            std::process::exit(0);
+        Err(error) => {
+            eprintln!("ai-usagebar: failed to create runtime: {error}");
+            std::process::exit(1);
         }
     };
-    // An administrative report, not the widget: it needs the runtime but must
-    // not go through the always-exit-0 Waybar contract. A script piping this
-    // deserves a real exit code when the document cannot be produced;
-    // per-entry fetch/auth failures stay inside the document.
-    if let Some(Command::Usage { json }) = &cli.command {
-        std::process::exit(rt.block_on(ai_usagebar::report::run(*json)));
-    }
-    let code = rt.block_on(run(cli));
+    let code = match cli.command {
+        Some(Command::Usage { json }) => rt.block_on(ai_usagebar::report::run(json)),
+        Some(Command::Settings { action }) => ai_usagebar::settings::run_cli(&action),
+        None => {
+            eprintln!("ai-usagebar: a command is required; try `ai-usagebar usage --json`");
+            2
+        }
+    };
     std::process::exit(code);
 }
 
 /// Extract `--config <PATH>` (or `--config=PATH`) from argv before clap sees
 /// it, so the flag is accepted in any position — including alongside a
-/// subcommand, which clap's `args_conflicts_with_subcommands` would otherwise
-/// reject. Returns the remaining argv (with the program name kept first) and
-/// the override, if any. A bare `--` ends the scan: it and everything after it
-/// are positional (clap convention) and pass through untouched. A dangling
-/// `--config` and a repeated `--config` are errors, matching `ai-usagebar-tui`.
+/// subcommand. Returns the remaining argv (with the program name kept first)
+/// and the override, if any. A bare `--` ends the scan: it and everything after
+/// it are positional (clap convention) and pass through untouched.
 fn split_config_arg<I>(
     argv: I,
 ) -> Result<(Vec<std::ffi::OsString>, Option<std::path::PathBuf>), String>
@@ -144,81 +93,6 @@ where
     Ok((rest, config))
 }
 
-async fn run_nous_auth(action: &NousAuthAction) -> i32 {
-    let store = ai_usagebar::nous::credentials::CredentialStore::default();
-    match action {
-        NousAuthAction::Logout => match store.logout() {
-            Ok(()) => {
-                println!("Nous Research logout complete");
-                0
-            }
-            Err(error) => {
-                eprintln!("Nous Research logout failed: {error}");
-                1
-            }
-        },
-        NousAuthAction::Login => {
-            let client = match reqwest::Client::builder()
-                .timeout(ai_usagebar::vendor::HTTP_CLIENT_TIMEOUT)
-                .redirect(ai_usagebar::vendor::same_origin_redirect_policy())
-                .build()
-            {
-                Ok(client) => client,
-                Err(_) => {
-                    eprintln!("Nous Research login failed: could not initialize HTTP client");
-                    return 1;
-                }
-            };
-            let endpoints = ai_usagebar::nous::oauth::Endpoints::default();
-            let device =
-                match ai_usagebar::nous::oauth::request_device_code(&client, &endpoints).await {
-                    Ok(device) => device,
-                    Err(error) => {
-                        eprintln!("Nous Research login failed: {error}");
-                        return 1;
-                    }
-                };
-            println!("Open {}", device.verification_uri);
-            println!("Verification code: {}", device.user_code);
-            let opener = ai_usagebar::nous::oauth::SystemBrowserOpener;
-            if !ai_usagebar::nous::oauth::open_verification_url(
-                &device.verification_uri_complete,
-                &opener,
-            ) {
-                eprintln!("Browser opener unavailable; open the URL manually.");
-            }
-            let token =
-                match ai_usagebar::nous::oauth::poll_for_token(&client, &endpoints.token, &device)
-                    .await
-                {
-                    Ok(token) => token,
-                    Err(error) => {
-                        eprintln!("Nous Research login failed: {error}");
-                        return 1;
-                    }
-                };
-            let credential =
-                match ai_usagebar::nous::oauth::credential_from_token(token, chrono::Utc::now()) {
-                    Ok(credential) => credential,
-                    Err(error) => {
-                        eprintln!("Nous Research login failed: {error}");
-                        return 1;
-                    }
-                };
-            match ai_usagebar::nous::oauth::persist_credential(&store, credential) {
-                Ok(()) => {
-                    println!("Nous Research login complete");
-                    0
-                }
-                Err(error) => {
-                    eprintln!("Nous Research login failed: {error}");
-                    1
-                }
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,13 +107,12 @@ mod tests {
             "ai-usagebar",
             "--config",
             "a.toml",
-            "account",
-            "add",
-            "work",
+            "usage",
+            "--json",
         ]))
         .unwrap();
         assert_eq!(config.as_deref(), Some(std::path::Path::new("a.toml")));
-        assert_eq!(rest, argv(&["ai-usagebar", "account", "add", "work"]));
+        assert_eq!(rest, argv(&["ai-usagebar", "usage", "--json"]));
     }
 
     #[test]
@@ -252,23 +125,13 @@ mod tests {
 
     #[test]
     fn tokens_after_double_dash_pass_through_untouched() {
-        let (rest, config) = split_config_arg(argv(&[
-            "ai-usagebar",
-            "account",
-            "add",
-            "--",
-            "--config",
-            "work",
-        ]))
-        .unwrap();
+        let (rest, config) =
+            split_config_arg(argv(&["ai-usagebar", "--", "--config", "a.toml"])).unwrap();
         assert!(
             config.is_none(),
             "`--config` behind `--` is a positional, not the flag"
         );
-        assert_eq!(
-            rest,
-            argv(&["ai-usagebar", "account", "add", "--", "--config", "work"])
-        );
+        assert_eq!(rest, argv(&["ai-usagebar", "--", "--config", "a.toml"]));
     }
 
     #[test]
@@ -289,9 +152,7 @@ mod tests {
         assert_eq!(err, "--config requires a path");
     }
 
-    /// Both `--config` forms must hand the exact platform bytes to the path
-    /// (the `=` form used to go through `to_string_lossy`, which replaced
-    /// undecodable bytes with U+FFFD and produced a false "file not found").
+    /// Both `--config` forms must hand the exact platform bytes to the path.
     #[cfg(unix)]
     #[test]
     fn both_forms_keep_undecodable_bytes_intact() {
@@ -313,25 +174,6 @@ mod tests {
         assert_eq!(
             config.expect("spaced form parsed").as_os_str().as_bytes(),
             b"caf\xe9.toml"
-        );
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn equals_form_keeps_lone_surrogates_intact() {
-        use std::os::windows::ffi::{OsStrExt, OsStringExt};
-        let mut wide: Vec<u16> = "--config=".encode_utf16().collect();
-        wide.push(0xDC00); // lone low surrogate: not valid Unicode
-        let arg = std::ffi::OsString::from_wide(&wide);
-        let (_rest, config) =
-            split_config_arg(vec![std::ffi::OsString::from("ai-usagebar"), arg]).unwrap();
-        assert_eq!(
-            config
-                .expect("equals form parsed")
-                .as_os_str()
-                .encode_wide()
-                .collect::<Vec<_>>(),
-            vec![0xDC00u16]
         );
     }
 }

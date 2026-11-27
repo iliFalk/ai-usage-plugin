@@ -70,9 +70,6 @@ Column {
         || notifyEnabledPending || notifyThresholdPending)
 
   signal saved()
-  signal fallbackRequested()
-  signal nousLoginRequested()
-  signal copilotLoginRequested()
   signal showValueRequested(bool enabled)
   signal showProviderRequested(bool enabled)
   signal showAllRequested(bool enabled)
@@ -707,9 +704,7 @@ Column {
               Toggle {
                 required property var modelData
                 width: parent.width
-                label: modelData.labelKey !== ""
-                  ? root.tr(modelData.labelKey)
-                  : I18n.displayLabel(root.uiLocale, modelData.label)
+                label: modelData.label
                 description: root.safe(modelData.group)
                 checked: modelData.checked
                 foreground: root.foreground
@@ -760,14 +755,6 @@ Column {
           foreground: root.foreground
           fontFamily: root.fontFamily
           onClicked: root.load()
-        }
-        Button {
-          text: root.tr("action.terminal_settings")
-          bordered: true
-          focusable: true
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-          onClicked: root.fallbackRequested()
         }
       }
     }
@@ -915,49 +902,6 @@ Column {
       visible: root.openSection === "credentials"
       width: parent.width
       spacing: Style.space(10)
-
-      PanelSectionHeader {
-        text: root.tr("section.auth")
-        foreground: root.foreground
-        fontFamily: root.fontFamily
-      }
-      Text {
-        width: parent.width
-        text: root.tr("auth.help")
-        textFormat: Text.PlainText
-        color: root.dim
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.caption
-        wrapMode: Text.WordWrap
-      }
-      Button {
-        width: parent.width
-        text: root.tr("auth.nous")
-        iconText: "󰍂"
-        bordered: true
-        focusable: true
-        foreground: root.foreground
-        fontFamily: root.fontFamily
-        enabled: !root.saving
-        onClicked: {
-          root.statusText = root.tr("status.nous_login")
-          root.nousLoginRequested()
-        }
-      }
-      Button {
-        width: parent.width
-        text: root.tr("auth.copilot")
-        iconText: "󰊤"
-        bordered: true
-        focusable: true
-        foreground: root.foreground
-        fontFamily: root.fontFamily
-        enabled: !root.saving
-        onClicked: {
-          root.statusText = root.tr("status.copilot_login")
-          root.copilotLoginRequested()
-        }
-      }
 
     Column {
       visible: root.snapshot.keys.length > 0

@@ -38,8 +38,7 @@ omarchy plugin remove akitaonrails.ai-usagebar
 
 ## Controls
 
-- Bar: left-click opens the native Quattro usage panel; right-click
-  intentionally launches `ai-usagebar-tui` in a terminal; middle-click or the
+- Bar: left-click opens the native Quattro usage panel; middle-click or the
   mouse wheel switches to the next provider the bar is showing. A provider
   hidden from the bar stays in the panel. With **Show all providers** on the
   bar draws one chip per entry, and left-clicking a chip opens the panel on
@@ -54,8 +53,8 @@ omarchy plugin remove akitaonrails.ai-usagebar
   Its **Show usage value in the top bar** toggle switches between the normal
   icon-and-value label and a compact icon-only label without hiding panel or
   tooltip details. Its **Show provider name in the top bar** toggle adds the
-  provider's three-letter code in front of that value — the same code Waybar's
-  `{vendor_short}` prints — and is off by default. Its **Color-code usage by
+  provider's three-letter code in front of that value — the same `short_name`
+  the report ships — and is off by default. Its **Color-code usage by
   level** toggle paints bar values, panel meters, and the tooltip green →
   yellow → orange → red from the Omarchy theme as usage climbs, and is off by
   default. Its **Show provider logos** toggle, on by default, draws each
@@ -119,28 +118,23 @@ next refresh. The switch only ever names built-in providers, and travels over
 the same stdin patch as everything else.
 
 Not every provider has a credential field, and a missing one is not an omission.
-Claude, Codex, GitHub Copilot, Cursor, Kiro, Antigravity, and Command Code
-authenticate through an existing official or local login, so they never appear
-in the key list. For GitHub Copilot, click **Log in with GitHub Copilot** to
-run `gh auth login --web` in a terminal. Complete the login, then choose
-**GitHub Copilot** under **Primary Provider** and save. That explicitly enables
-`[copilot]` and makes it the app-wide default. The fetcher obtains OAuth only
-through the fixed `gh auth token` command; it never parses GitHub CLI, editor,
-or browser credential stores and never saves a token. A non-empty
-`GITHUB_COPILOT_TOKEN` is an optional explicit override.
+Both shipped-key providers in that list are API-key backed: `OPENCODE_GO_API_KEY`
+for OpenCode Go, and `OPENROUTER_API_KEY` / `DEEPSEEK_API_KEY` for the other two
+named accounts included. Nothing here authenticates through a browser login, so
+no login button exists in the settings form.
 
 Existing installations need no migration: `config.toml`, environment-variable
-precedence, the TUI, Waybar, macOS, and Windows behavior are unchanged. If the
-plugin is updated before the `ai-usagebar` package, the form offers the terminal
-settings fallback until the binary has the native settings bridge.
+precedence and the binary's own behavior are unchanged. If the plugin is updated
+before the `ai-usagebar` package, the form offers the terminal settings fallback
+until the binary has the native settings bridge.
 
 The plugin's display-only options remain in `~/.config/omarchy/shell.json` and
 can be changed through Omarchy's bar UI or CLI:
 
 ```bash
 # Show only one entry. Use an id printed by `ai-usagebar usage --json`.
-omarchy bar set akitaonrails.ai-usagebar provider openai
-omarchy bar set akitaonrails.ai-usagebar provider anthropic@work
+omarchy bar set akitaonrails.ai-usagebar provider openrouter
+omarchy bar set akitaonrails.ai-usagebar provider deepseek@work
 
 # Empty means all configured entries, with switching in the panel.
 omarchy bar set akitaonrails.ai-usagebar provider ''
@@ -151,7 +145,7 @@ omarchy bar set akitaonrails.ai-usagebar refreshIntervalSec 300 --json
 # Booleans also need --json. The default is true for drop-in compatibility.
 omarchy bar set akitaonrails.ai-usagebar showValue false --json
 
-# Opt in to the Waybar-style provider tag. The default is false.
+# Opt in to the provider tag (ocg, opr, dsk) in front of the value. Default false.
 omarchy bar set akitaonrails.ai-usagebar showProvider true --json
 
 # Show every configured provider's icon and usage at once. The default is false.
@@ -177,87 +171,55 @@ omarchy bar set akitaonrails.ai-usagebar brandIcons false --json
 # Panel and settings language: auto (follow the system locale, the default),
 # en, ru, pt-BR, ko, or es.
 omarchy bar set akitaonrails.ai-usagebar uiLocale pt-BR
-
-# Cursor's chip lists Cursor Models, Other Models, on-demand used percent,
-# then a credit grant when the account has one. These switches hide a figure
-# from the top bar, the tooltip, the panel header and the panel list, like the
-# pool buttons on the panel. At least one stays on. Credits is absent when there is no grant.
-omarchy bar set akitaonrails.ai-usagebar showCursorModels false --json
-omarchy bar set akitaonrails.ai-usagebar showCursorOther false --json
-omarchy bar set akitaonrails.ai-usagebar showCursorOnDemand false --json
-omarchy bar set akitaonrails.ai-usagebar showCursorCredits false --json
-
-# Antigravity's chip shows one figure per model pool: the most-used Session or
-# Weekly window of Gemini and of Claude & GPT OSS.
-omarchy bar set akitaonrails.ai-usagebar showAntigravityGemini false --json
-omarchy bar set akitaonrails.ai-usagebar showAntigravityClaudeGpt false --json
 ```
 
 The refresh interval is clamped to 30–3600 seconds. The `provider` setting
 prefers an exact entry id; if there is no exact match, a base id such as
-`anthropic` selects all accounts for that provider. `showValue`,
+`deepseek` selects all accounts for that provider. `showValue`,
 `showProvider`, and `showAll` change only the top-bar label; `colorCodeUsage`
 also recolors the panel meters and tooltip; `barWindow`
 changes the top-bar value and its tooltip/hero echo; none hide report
-details or change provider fetching. Cursor is the exception to the window
-pin: its two included pools are model categories, so the chip shows Cursor
-Models, Other Models, prepaid on-demand used percent, and a credit grant
-side by side (`35% · 7% · 0% · 15%`). The Cursor page's switches hide those
-figures from
-the top bar, the tooltip, the panel header and the panel list, and the Metrics
-section of the settings flips the same switches. The last remaining figure
-cannot be turned off. A pool
-the report does not contain does not count as that last figure. The bar's
-urgent color follows the pools still on the chip; each panel row keeps its
-own color. Antigravity works the same way: Gemini and Claude & GPT OSS are
-independent pools, each represented by its most-used Session or Weekly window,
-and the pool buttons above its list hide both of that pool's windows. For every
-other provider, panel rows list every window and the alert
-state follows the highest percent of the metrics not hidden. `barWindow` falls
+details or change provider fetching. `barWindow` falls
 back to the highest percent (balance/text where a vendor has no metric) when
 a vendor lacks the pinned window (a balance-only provider, a weekly-only
-response, or no monthly pool), so the bar never goes blank.
+response, or no monthly pool), so the bar never goes blank. The one provider
+with every window lists all three: OpenCode Go's Rolling (5h), Weekly (7d) and
+Monthly rows are chosen by their stated length, so `barWindow session` pins the
+rolling window whatever the others read. The alert state always follows the
+highest percent of the metrics not hidden, never the pinned window.
 
-The **Metrics** section of the panel Settings chooses what each provider shows,
-the way the tray's Customize does: it expands per provider, with one switch per
-metric. A metric switched off disappears from the panel, the top bar and the
-tooltip. The choice is saved as `hiddenMetrics` in the widget's `shell.json`
+The **Metrics** section of the panel Settings chooses what each provider shows:
+it expands per provider, with one switch per metric. A metric switched off
+disappears from the panel, the top bar and the tooltip. The choice is saved as
+`hiddenMetrics` in the widget's `shell.json`
 settings, a map from an entry id to the metric labels switched off
-(`{"zai": ["MCP tools (monthly)"]}`; a metric under a heading is keyed
+(`{"opencode-go": ["Monthly"]}`; a metric under a heading is keyed
 `Heading / Label`), so each account is independent. A hidden metric is ignored
 when the bar picks the highest percentage and when it decides whether the icon
-is alarming, so Z.AI with Session and Weekly at 0% and the monthly MCP window
-switched off reads `0%` however full that window is. A row under a heading
-(SuperGrok's product slices, Claude's CLI sessions) stands in for the bar only
-when no other meter is left, so switching off every plain window lets such a
-row set the value and the alert. The last metric still on cannot be switched
-off: its switch is disabled, so the bar never goes blank (a `hiddenMetrics`
-that would hide every metric, edited by hand, is ignored). Cursor and Antigravity
-list their time windows in that section (Session, Weekly, Monthly): a window
-switched off hides every model pool of it, and Cursor's single monthly window is
-locked. The pools stay on the buttons above the list (`showCursorModels`,
-`showAntigravityGemini` and friends).
+is alarming, so an OpenCode Go entry with Rolling and Weekly almost empty and
+the Monthly window switched off stays low however full that window is. The last
+metric still on cannot be switched off: its switch is disabled, so the bar never
+goes blank (a `hiddenMetrics` that would hide every metric, edited by hand, is
+ignored). A balance-only entry (DeepSeek, OpenRouter without credits) has no
+metric rows to offer, so its section stays hidden.
 `showAs` changes only the number: Left shows what remains of the most-used
-window (Z.AI's 18% monthly window reads `82%`), and the alert state keeps
+window (OpenCode Go's 18% weekly window reads `82%`), and the alert state keeps
 following the used share.
 
 `showProvider` draws the `short_name` the Rust report ships for the selected
-entry, so the codes never fork from Waybar's `{vendor_short}`: `cld 29%`,
-`gpt 95%`, `agy 81%`. Every account of one provider shares that provider's
-code — the panel and tooltip remain the place that tells `Claude · work` from
-`Claude · personal`. With both toggles on the bar reads icon + `cld 29%`; with
-`showValue` off it is the icon and `cld`. `showAll` draws every visible
+entry, so the codes are the same ones the report prints: `ocg 42%`,
+`opr 25%`, `dsk $8.42`. Every account of one provider shares that provider's
+code — the panel and tooltip remain the place that tells `OpenRouter · work`
+from `OpenRouter · personal`. With both toggles on the bar reads icon + `ocg 42%`; with
+`showValue` off it is the icon and `ocg`. `showAll` draws every visible
 entry as its own chip with a brand SVG (see [`icons/README.md`](icons/README.md)
 for source and licence) — and each chip is a target for its entry across the
 whole bar height and its share of the gaps beside it, so a left-click anywhere
-in that column opens the panel there. Grok and SuperGrok share a mark; Grok Bot has its
-own head-and-eyes logomark. Command Code has
-none and falls back to its three-letter code. A `[[custom]]` provider can set
-`brand = "<built-in slug>"` to use one of these marks; without it, the custom
-entry keeps its three-letter tag. A vertical bar has room for none of this and
-keeps showing a single icon.
+in that column opens the panel there. The three shipped providers each have
+their own mark; anything else falls back to the nerd-font glyph from the report.
+A vertical bar has room for none of this and keeps showing a single icon.
 Against an `ai-usagebar` older than the `short_name` field the tag falls
-back to the entry id's provider half (`anthropic 29%`) until the binary is
+back to the entry id's provider half (`opencode-go 42%`) until the binary is
 updated.
 
 ## Development checks

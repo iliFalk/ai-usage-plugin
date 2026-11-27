@@ -118,6 +118,18 @@ pub fn combine(
     }
 }
 
+/// OpenRouter severity is keyed on consumed-percentage (low credit =
+/// critical), with one case the percentage cannot express: an account that
+/// owes money. `consumed_pct` needs `total_credits` as a denominator and
+/// reports 0 without one, so an account that never bought credits but ran up
+/// usage would otherwise show a debt in reassuring green.
+pub fn severity(snap: &OpenRouterSnapshot) -> crate::pacing::PaceSeverity {
+    if snap.balance() < 0.0 {
+        return crate::pacing::PaceSeverity::Critical;
+    }
+    crate::pacing::severity_for(snap.consumed_pct())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

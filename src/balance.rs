@@ -11,16 +11,8 @@
 //! [`Headline`] is the user's preference; [`MetricHeadline`] is what a report
 //! metric actually declares after the preference meets the available data.
 //!
-//! Who acts on it, as of this commit:
-//! - The Omarchy panel and the KDE plasmoid read the declaration and draw the
-//!   number it names, instead of guessing from the row's label.
-//! - The tray popover (Windows WebView2, macOS WKWebView) reads it too: a
-//!   `"value"` metric puts the money figure under its meter and moves the
-//!   percentage and the detail to the hover text. A `"percent"` metric keeps
-//!   the popover's own used/left toggle, whose "used" reading is the consumed
-//!   percentage.
-//! - Waybar and GNOME are fed by the per-vendor `{placeholder}` formats rather
-//!   than by report sections, so neither setting reaches them at all.
+//! The Omarchy panel reads the declaration and draws the number it names,
+//! instead of guessing from the row's label.
 
 use serde::{Deserialize, Serialize};
 

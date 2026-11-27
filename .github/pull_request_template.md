@@ -9,8 +9,8 @@ otherwise ask for — see CONTRIBUTING.md for the reasoning behind each.
 
 ## Screenshots
 
-<!-- For a visual change (popover, menu bar, tray icon): before and after,
-for every style, OS and theme it touches. Delete this section otherwise. -->
+<!-- For a visual change (bar chip, popup, settings page): before and after,
+for every locale and theme it touches. Delete this section otherwise. -->
 
 ## Checklist
 
@@ -21,9 +21,10 @@ for every style, OS and theme it touches. Delete this section otherwise. -->
 - [ ] A test that fails on `main` and passes here, for a bug fix
 - [ ] Docs updated where they mention what changed (`README.md`,
       `config.example.toml`, `docs/`)
+- [ ] `make plugin-test` passes when `omarchy/` or `manifest.json` changed
 - [ ] No helper left behind without callers
 
 ## Testing
 
-<!-- What you ran, and on which platform. If you tested on macOS or Windows,
-say so — those paths are built by CI but not exercised by the maintainer. -->
+<!-- What you ran. `make omarchy-visual-test` needs Quickshell; say so if the
+visual check could not run. -->

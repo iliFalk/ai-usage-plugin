@@ -2,7 +2,7 @@
 //!
 //! Vendor responses and cached diagnostics are data, not terminal programs.
 //! Keep ordinary Unicode and line breaks, but remove terminal control bytes
-//! before the text is persisted or handed to Pango/ratatui/ANSI renderers.
+//! before the text is persisted or handed to any renderer.
 
 /// Generous bound for one remote label or diagnostic field. Legitimate values
 /// are normally a few dozen characters; the cap prevents a valid-but-hostile
