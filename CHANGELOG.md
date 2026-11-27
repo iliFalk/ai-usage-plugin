@@ -1,5 +1,13 @@
 ## [Unreleased]
 
+### Added
+
+- **The Omarchy panel sets the quota notifications.** Settings → Notifications
+  carries the enable switch and the threshold, the same two fields the TUI
+  overlay writes; the threshold is accepted only in 1..=100, checked in Rust
+  before anything is persisted. Until now both lived in `config.toml` only,
+  and the panel could neither show nor change them.
+
 ## [1.45.0] — 2026-10-27
 
 ### Added
