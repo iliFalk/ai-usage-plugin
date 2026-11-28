@@ -52,7 +52,7 @@ rustPlatform.buildRustPackage {
 
   meta = {
     description = "Data source for the Omarchy AI Usage panel: quota and balance for OpenCode Go, DeepSeek and OpenRouter";
-    homepage = "https://github.com/akitaonrails/ai-usagebar";
+    homepage = "https://github.com/iliFalk/ai-usage-plugin";
     license = lib.licenses.mit;
     mainProgram = "ai-usagebar";
     platforms = [

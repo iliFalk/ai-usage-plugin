@@ -1,26 +1,21 @@
-pkgbase = ai-usagebar-bin
+pkgbase = ai-usagebar-ilifalk-bin
 	pkgdesc = Data source for the Omarchy AI Usage panel (prebuilt binary)
 	pkgver = 1.45.0
 	pkgrel = 1
-	url = https://github.com/akitaonrails/ai-usagebar
+	url = https://github.com/iliFalk/ai-usage-plugin
 	arch = x86_64
 	arch = aarch64
 	license = MIT
 	depends = gcc-libs
 	optdepends = libnotify: quota-threshold desktop notifications
 	provides = ai-usagebar=1.45.0
-	conflicts = ai-usagebar
-	conflicts = ai-usagebar-debug
+	conflicts = ai-usagebar-ilifalk
+	conflicts = ai-usagebar-ilifalk-debug
 	options = !strip
 	options = !debug
-	validpgpkeys = AE42EF5D73DD92E248815C95B65CCCAF64A99438
-	source_x86_64 = ai-usagebar-1.45.0-x86_64.tar.gz::https://github.com/akitaonrails/ai-usagebar/releases/download/v1.45.0/ai-usagebar-linux-x86_64.tar.gz
-	source_x86_64 = ai-usagebar-1.45.0-x86_64.tar.gz.sig::https://github.com/akitaonrails/ai-usagebar/releases/download/v1.45.0/ai-usagebar-linux-x86_64.tar.gz.sig
+	source_x86_64 = ai-usagebar-1.45.0-x86_64.tar.gz::https://github.com/iliFalk/ai-usage-plugin/releases/download/v1.45.0/ai-usagebar-linux-x86_64.tar.gz
 	sha256sums_x86_64 = SKIP
-	sha256sums_x86_64 = SKIP
-	source_aarch64 = ai-usagebar-1.45.0-aarch64.tar.gz::https://github.com/akitaonrails/ai-usagebar/releases/download/v1.45.0/ai-usagebar-linux-aarch64.tar.gz
-	source_aarch64 = ai-usagebar-1.45.0-aarch64.tar.gz.sig::https://github.com/akitaonrails/ai-usagebar/releases/download/v1.45.0/ai-usagebar-linux-aarch64.tar.gz.sig
-	sha256sums_aarch64 = SKIP
+	source_aarch64 = ai-usagebar-1.45.0-aarch64.tar.gz::https://github.com/iliFalk/ai-usage-plugin/releases/download/v1.45.0/ai-usagebar-linux-aarch64.tar.gz
 	sha256sums_aarch64 = SKIP
 
-pkgname = ai-usagebar-bin
+pkgname = ai-usagebar-ilifalk-bin

@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "id": "akitaonrails.ai-usagebar",
+  "id": "iljafalk.ai-usage",
   "name": "AI Usage",
   "version": "1.45.0",
-  "author": "AkitaOnRails",
+  "author": "Ilja <ilja@falknest.net>",
   "license": "MIT",
-  "description": "Multi-provider AI plan usage and balances in a native Omarchy Quattro panel. Needs the ai-usagebar binary as well as this plugin: omarchy pkg aur add ai-usagebar-bin",
+  "description": "Multi-provider AI plan usage and balances in a native Omarchy Quattro panel. Needs the ai-usagebar binary as well as this plugin: omarchy pkg aur add ai-usagebar-ilifalk-bin",
   "kinds": [
     "bar-widget"
   ],
@@ -15,7 +15,7 @@
   },
   "barWidget": {
     "displayName": "AI Usage",
-    "description": "Usage windows, reset countdowns, balances, and provider switching for every provider configured in ai-usagebar. This is the display frontend only — install the binary with omarchy pkg aur add ai-usagebar-bin.",
+    "description": "Usage windows, reset countdowns, balances, and provider switching for every provider configured in ai-usagebar. This is the display frontend only — install the binary with omarchy pkg aur add ai-usagebar-ilifalk-bin.",
     "category": "AI",
     "aliases": [
       "ai-usage",

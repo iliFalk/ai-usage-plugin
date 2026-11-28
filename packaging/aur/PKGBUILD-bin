@@ -1,12 +1,12 @@
-# Maintainer: AkitaOnRails <boss@akitaonrails.com>
+# Maintainer: Ilja <ilja@falknest.net>
 
-pkgname=ai-usagebar-bin
+pkgname=ai-usagebar-ilifalk-bin
 _pkgname=ai-usagebar
 pkgver=1.45.0
 pkgrel=1
 pkgdesc="Data source for the Omarchy AI Usage panel (prebuilt binary)"
 arch=('x86_64' 'aarch64')
-url="https://github.com/akitaonrails/ai-usagebar"
+url="https://github.com/iliFalk/ai-usage-plugin"
 license=('MIT')
 depends=('gcc-libs')
 optdepends=(
@@ -16,26 +16,23 @@ provides=("$_pkgname=$pkgver")
 # Conflict with both the source variant AND its auto-generated debug split.
 # Without listing `ai-usagebar-debug` explicitly, swapping from source → bin
 # leaves an orphan debug package that fights us over /usr/lib/debug paths.
-conflicts=("$_pkgname" "$_pkgname-debug")
+conflicts=('ai-usagebar-ilifalk' 'ai-usagebar-ilifalk-debug')
 # The release tarball ships a pre-stripped binary, so re-stripping is a
 # no-op and the auto-generated -debug split would be empty AND would
 # collide with the source variant's `ai-usagebar-debug` package.
 options=('!strip' '!debug')
-validpgpkeys=('AE42EF5D73DD92E248815C95B65CCCAF64A99438') # AkitaOnRails <boss@akitaonrails.com>
 
 # Per-arch sources — pacman picks the matching one for the host arch.
-# The detached .sig accompanies each tarball so makepkg verifies source
-# signatures against validpgpkeys (#282).
+# The tarballs are unsigned: this fork publishes no detached .sig and no
+# signing key, so there is no validpgpkeys to verify against.
 source_x86_64=(
     "$_pkgname-$pkgver-x86_64.tar.gz::$url/releases/download/v$pkgver/$_pkgname-linux-x86_64.tar.gz"
-    "$_pkgname-$pkgver-x86_64.tar.gz.sig::$url/releases/download/v$pkgver/$_pkgname-linux-x86_64.tar.gz.sig"
 )
 source_aarch64=(
     "$_pkgname-$pkgver-aarch64.tar.gz::$url/releases/download/v$pkgver/$_pkgname-linux-aarch64.tar.gz"
-    "$_pkgname-$pkgver-aarch64.tar.gz.sig::$url/releases/download/v$pkgver/$_pkgname-linux-aarch64.tar.gz.sig"
 )
-sha256sums_x86_64=('SKIP' 'SKIP')
-sha256sums_aarch64=('SKIP' 'SKIP')
+sha256sums_x86_64=('SKIP')
+sha256sums_aarch64=('SKIP')
 
 package() {
     install -Dm0755 -t "$pkgdir/usr/bin/"                "ai-usagebar"

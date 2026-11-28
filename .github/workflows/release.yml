@@ -297,8 +297,8 @@ jobs:
             echo "### Arch (AUR)"
             echo
             echo '```bash'
-            echo "yay -S ai-usagebar-bin      # prebuilt binary from this release"
-            echo "yay -S ai-usagebar          # compiles from source"
+            echo "yay -S ai-usagebar-ilifalk-bin # prebuilt binary from this release"
+            echo "yay -S ai-usagebar-ilifalk     # compiles from source"
             echo '```'
             echo
             echo "### Manual"
@@ -318,183 +318,22 @@ jobs:
             fi
           } > body.md
 
-      # Opt-in PGP signing (#257). Without the GPG_PRIVATE_KEY secret this
-      # pair of steps is skipped and the release is byte-for-byte what it
-      # was before. The presence probe mirrors the AUR secret check: the
-      # secrets context is not readable from a step `if:`, so a prior step
-      # exports the verdict. The key still travels via env indirection (never
-      # inline `${{ }}` expansion into the script) and the passphrase reaches
-      # gpg on stdin — never in argv.
-      - name: Check GPG signing key presence
-        id: gpg_key
-        env:
-          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
-        run: |
-          if [ -z "$GPG_PRIVATE_KEY" ]; then
-            echo "set=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "set=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Sign release artifacts (opt-in)
-        if: steps.gpg_key.outputs.set == 'true'
-        env:
-          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
-          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-          RELEASE_TAG: ${{ inputs.ref || github.ref_name }}
-        run: |
-          set -euo pipefail
-          umask 077
-          keyfile="${RUNNER_TEMP}/signing-key.asc"
-          printf '%s\n' "$GPG_PRIVATE_KEY" > "$keyfile"
-          gpg --batch --import "$keyfile"
-          rm -f "$keyfile"
-          keyid=$(gpg --list-secret-keys --with-colons | awk -F: '/^sec/{print $5; exit}')
-          fingerprint=$(gpg --list-secret-keys --with-colons "$keyid" | awk -F: '/^fpr/{print $10; exit}')
-          echo "Signing as ${fingerprint}"
-
-          # Detached ASCII signatures for every downloadable artifact. The
-          # .sha256 sidecars stay unsigned on purpose: they are derived
-          # data, and a tampered sidecar makes the checksum check fail
-          # closed against the signed artifact itself. A passphraseless
-          # key must NOT take the --passphrase-fd path: gpg reads the
-          # empty line and fails with "No passphrase given" (the v1.28.0
-          # first-run failure), so the fd-0 loopback is only wired when a
-          # passphrase actually exists.
-          sign() {
-            if [ -n "${GPG_PASSPHRASE:-}" ]; then
-              gpg --batch --yes --pinentry-mode loopback --passphrase-fd 0 \
-                --detach-sign --armor --output "$1.sig" "$1" <<<"$GPG_PASSPHRASE"
-            else
-              gpg --batch --yes --pinentry-mode loopback \
-                --detach-sign --armor --output "$1.sig" "$1"
-            fi
-          }
-          shopt -s nullglob
-          for f in artifacts/*.tar.gz; do
-            sign "$f"
-          done
-
-          # The public key rides along so verification needs no keyserver.
-          gpg --armor --export "$keyid" > artifacts/ai-usagebar-signing-key.asc
-
-          {
-            echo
-            echo "## Verifying signatures"
-            echo
-            echo '```bash'
-            echo "curl -fsSL -O https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/ai-usagebar-signing-key.asc"
-            echo "gpg --import ai-usagebar-signing-key.asc   # ${fingerprint}"
-            echo "curl -fsSL -O https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/ai-usagebar-linux-x86_64.tar.gz.sig"
-            echo "gpg --verify ai-usagebar-linux-x86_64.tar.gz.sig ai-usagebar-linux-x86_64.tar.gz"
-            echo '```'
-          } >> body.md
-
       - name: Create / update GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_REF: ${{ inputs.ref || github.ref_name }}
         run: |
           TAG="$RELEASE_REF"
-          # The signature set exists only when the opt-in signing step ran.
-          # nullglob + the array keeps an unmatched `*.sig` from reaching gh
-          # as a literal filename on unsigned releases.
-          shopt -s nullglob
-          sigs=(artifacts/*.sig)
-          [ -f artifacts/ai-usagebar-signing-key.asc ] && \
-            sigs+=("artifacts/ai-usagebar-signing-key.asc")
           # Replace any pre-existing assets so re-runs (workflow_dispatch on
           # an existing tag) overwrite cleanly.
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG" artifacts/*.tar.gz artifacts/*.sha256 \
-              ${sigs[@]+"${sigs[@]}"} \
               --repo "$GITHUB_REPOSITORY" --clobber
             gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file body.md
           else
             gh release create "$TAG" artifacts/*.tar.gz artifacts/*.sha256 \
-              ${sigs[@]+"${sigs[@]}"} \
               --repo "$GITHUB_REPOSITORY" \
               --title "$TAG" \
               --notes-file body.md \
               --latest
           fi
-
-  publish-aur:
-    needs: [verify-version, build, release]
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v') || inputs.ref != ''
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ inputs.ref || github.ref }}
-
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          path: artifacts
-          merge-multiple: true
-
-      # Compute the real sha256s and inject them into both PKGBUILDs so the
-      # AUR deploy action publishes pinned hashes (the in-tree PKGBUILDs
-      # carry `SKIP` between releases by convention — see docs/AGENT-NOTES.md).
-      - name: Pin sha256s in PKGBUILDs
-        env:
-          TAG: ${{ inputs.ref || github.ref_name }}
-        run: |
-          SRC_URL="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${TAG}.tar.gz"
-          SRC_SHA=$(curl -fsSL "$SRC_URL" | sha256sum | awk '{print $1}')
-          sed -i "s/^sha256sums=.*/sha256sums=('$SRC_SHA')/" packaging/aur/PKGBUILD
-
-          X86_SHA=$(awk '{print $1}' artifacts/ai-usagebar-linux-x86_64.tar.gz.sha256)
-          ARM_SHA=$(awk '{print $1}' artifacts/ai-usagebar-linux-aarch64.tar.gz.sha256)
-          sed -i "s/^sha256sums_x86_64=.*/sha256sums_x86_64=('$X86_SHA' 'SKIP')/" packaging/aur/PKGBUILD-bin
-          sed -i "s/^sha256sums_aarch64=.*/sha256sums_aarch64=('$ARM_SHA' 'SKIP')/" packaging/aur/PKGBUILD-bin
-
-          # deploy-aur copies pkgbuild verbatim (preserves filename). The AUR
-          # bin repo tracks a file literally named `PKGBUILD`, so stage the
-          # `-bin` variant under that name. Without this, makepkg generates
-          # .SRCINFO from the stale PKGBUILD and pushes an empty commit (the
-          # mode that bit us in v0.4.4 — see CHANGELOG).
-          mkdir -p staging/bin
-          cp packaging/aur/PKGBUILD-bin staging/bin/PKGBUILD
-
-      - name: Check AUR_SSH_KEY presence
-        id: aur_key
-        env:
-          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
-        run: |
-          if [ -z "$AUR_SSH_KEY" ]; then
-            echo "set=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::Skipping AUR push — no AUR_SSH_KEY secret set"
-          else
-            echo "set=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      # `KSXGitHub/github-actions-deploy-aur` spins up an Arch container,
-      # regenerates .SRCINFO via makepkg, then commits + pushes via SSH.
-      # Pinned to an immutable revision because this action receives the AUR
-      # SSH private key and executes in the release trust boundary.
-      - name: Publish ai-usagebar (source) to AUR
-        if: steps.aur_key.outputs.set == 'true'
-        uses: KSXGitHub/github-actions-deploy-aur@084b0d9b15415bf9cdb65d44dad1efe37a354050 # v4.2.0
-        with:
-          pkgname: ai-usagebar
-          pkgbuild: ./packaging/aur/PKGBUILD
-          commit_username: AkitaOnRails (GitHub Actions)
-          commit_email: boss@akitaonrails.com
-          ssh_private_key: ${{ secrets.AUR_SSH_KEY }}
-          commit_message: "ai-usagebar ${{ inputs.ref || github.ref_name }}"
-          ssh_keyscan_types: rsa,ecdsa,ed25519
-          force_push: 'false'
-
-      - name: Publish ai-usagebar-bin to AUR
-        if: steps.aur_key.outputs.set == 'true'
-        uses: KSXGitHub/github-actions-deploy-aur@084b0d9b15415bf9cdb65d44dad1efe37a354050 # v4.2.0
-        with:
-          pkgname: ai-usagebar-bin
-          pkgbuild: ./staging/bin/PKGBUILD
-          commit_username: AkitaOnRails (GitHub Actions)
-          commit_email: boss@akitaonrails.com
-          ssh_private_key: ${{ secrets.AUR_SSH_KEY }}
-          commit_message: "ai-usagebar-bin ${{ inputs.ref || github.ref_name }}"
-          ssh_keyscan_types: rsa,ecdsa,ed25519
-          force_push: 'false'

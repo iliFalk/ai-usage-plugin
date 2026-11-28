@@ -29,8 +29,8 @@ Optional:
 ## Build
 
 ```bash
-git clone https://github.com/akitaonrails/ai-usagebar.git
-cd ai-usagebar
+git clone https://github.com/iliFalk/ai-usage-plugin.git
+cd ai-usage-plugin
 
 cargo build --release
 ```

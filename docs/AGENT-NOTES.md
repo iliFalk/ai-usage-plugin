@@ -47,8 +47,8 @@ When cutting a new version (patch, minor, or major):
      (cd "$t" && makepkg --printsrcinfo > .SRCINFO-bin) &&
      cp "$t/.SRCINFO-bin" .SRCINFO-bin && rm -rf "$t"
    ```
-   The committed files keep `sha256sums = SKIP`; CI pins the real hashes at
-   release time.
+   The committed files keep `sha256sums = SKIP`; pin the real hashes by hand
+   before pushing to the AUR (step 9).
 6. **Run the gate before tagging**:
    ```
    make changelog-check                        # released sections + version files intact
@@ -69,23 +69,22 @@ When cutting a new version (patch, minor, or major):
    ```
 8. **Wait for CI**: the tag push triggers `.github/workflows/release.yml`, which
    builds the x86_64 and aarch64 tarballs and publishes a GitHub Release.
-9. **AUR push is automated** when `AUR_SSH_KEY` is set: `publish-aur` pins the
-   real sha256s into both PKGBUILDs, regenerates the `.SRCINFO`s and pushes via
-   `KSXGitHub/github-actions-deploy-aur`. The manual fallback, when the secret is
-   missing:
+9. **AUR push is manual in this fork** — there is no `publish-aur` job, and no
+   `AUR_SSH_KEY` secret. Pin the real sha256s into both PKGBUILDs yourself, then
+   push to the AUR git repos:
 
    **Pin the real sha256s first**:
    ```
    cd packaging/aur
-   curl -sLO https://github.com/akitaonrails/ai-usagebar/archive/refs/tags/vX.Y.Z.tar.gz
+   curl -sLO https://github.com/iliFalk/ai-usage-plugin/archive/refs/tags/vX.Y.Z.tar.gz
    sha256sum vX.Y.Z.tar.gz   # paste into PKGBUILD
-   curl -sL https://github.com/akitaonrails/ai-usagebar/releases/download/vX.Y.Z/ai-usagebar-linux-x86_64.tar.gz.sha256
-   curl -sL https://github.com/akitaonrails/ai-usagebar/releases/download/vX.Y.Z/ai-usagebar-linux-aarch64.tar.gz.sha256
+   curl -sL https://github.com/iliFalk/ai-usage-plugin/releases/download/vX.Y.Z/ai-usagebar-linux-x86_64.tar.gz.sha256
+   curl -sL https://github.com/iliFalk/ai-usage-plugin/releases/download/vX.Y.Z/ai-usagebar-linux-aarch64.tar.gz.sha256
    ```
    Regenerate the `.SRCINFO`s as in step 5, then push to the separate AUR git
    repos:
-   - `~/Projects/aur-ai-usagebar` → `ssh://aur@aur.archlinux.org/ai-usagebar.git`
-   - `~/Projects/aur-ai-usagebar-bin` → `ssh://aur@aur.archlinux.org/ai-usagebar-bin.git`
+   - `~/Projects/aur-ai-usagebar-ilifalk` → `ssh://aur@aur.archlinux.org/ai-usagebar-ilifalk.git`
+   - `~/Projects/aur-ai-usagebar-ilifalk-bin` → `ssh://aur@aur.archlinux.org/ai-usagebar-ilifalk-bin.git`
 
    **Always `git fetch origin && git reset --hard origin/master` in each AUR
    clone first.** A previous session may have pushed an intermediate release that

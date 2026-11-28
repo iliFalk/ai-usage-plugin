@@ -1,11 +1,12 @@
-# Maintainer: AkitaOnRails <boss@akitaonrails.com>
+# Maintainer: Ilja <ilja@falknest.net>
 
-pkgname=ai-usagebar
+pkgname=ai-usagebar-ilifalk
+_repo=ai-usage-plugin
 pkgver=1.45.0
 pkgrel=1
 pkgdesc="Data source for the Omarchy AI Usage panel: quota and balance for OpenCode Go, DeepSeek and OpenRouter"
 arch=('x86_64' 'aarch64')
-url="https://github.com/akitaonrails/ai-usagebar"
+url="https://github.com/iliFalk/ai-usage-plugin"
 license=('MIT')
 depends=('gcc-libs')
 makedepends=('cargo' 'git' 'nasm')
@@ -17,34 +18,35 @@ optdepends=(
 # triggers undefined-symbol link errors on x86_64.
 # !debug because Cargo.toml's release profile already strips symbols, so
 # the auto-generated -debug split would be empty AND would collide with
-# `ai-usagebar-bin-debug` if both variants were ever installed.
+# `ai-usagebar-ilifalk-bin-debug` if both variants were ever installed.
 options=('!lto' '!debug')
 # Pacman should auto-remove the binary variant when switching to source.
-conflicts=('ai-usagebar-bin')
-source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+conflicts=('ai-usagebar-ilifalk-bin')
+# The GitHub archive extracts to <repo>-<tag>, which is not $pkgname here.
+source=("$_repo-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('SKIP')
 
 prepare() {
-    cd "$pkgname-$pkgver"
+    cd "$_repo-$pkgver"
     export RUSTUP_TOOLCHAIN=stable
     cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
 }
 
 build() {
-    cd "$pkgname-$pkgver"
+    cd "$_repo-$pkgver"
     export RUSTUP_TOOLCHAIN=stable
     export CARGO_TARGET_DIR=target
     cargo build --frozen --release
 }
 
 check() {
-    cd "$pkgname-$pkgver"
+    cd "$_repo-$pkgver"
     export RUSTUP_TOOLCHAIN=stable
     cargo test --frozen --release
 }
 
 package() {
-    cd "$pkgname-$pkgver"
+    cd "$_repo-$pkgver"
     install -Dm0755 -t "$pkgdir/usr/bin/"                       "target/release/ai-usagebar"
     install -Dm0644 -t "$pkgdir/usr/share/$pkgname/"            "config.example.toml"
     install -Dm0644 -t "$pkgdir/usr/share/doc/$pkgname/"        "README.md"
