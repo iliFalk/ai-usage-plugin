@@ -1,4 +1,8 @@
-# CLAUDE.md
+# Agent notes — the long form
+
+The binding summary is `AGENTS.md` at the repository root; this file keeps the full history of the
+rules, the release checklist and the failure stories behind them. It is not loaded into an agent's
+prompt.
 
 Notes for Claude Code (and humans) about working in this repo. Keep tight: these
 are invariants we keep almost-forgetting, not a project tour.

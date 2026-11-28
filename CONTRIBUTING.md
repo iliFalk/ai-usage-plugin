@@ -40,7 +40,7 @@ Most review round-trips come from one of these.
 
 ## Project rules worth knowing
 
-These are in `CLAUDE.md` in full. The ones contributors hit most:
+These are in `AGENTS.md` in short and in `docs/AGENT-NOTES.md` in full. The ones contributors hit most:
 
 - **`usage` always exits 0** with a valid document. A provider's failure is an
   entry with `status: "error"`, never a failed run — the panel is a display.

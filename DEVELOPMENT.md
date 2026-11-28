@@ -1,8 +1,9 @@
 # Development guide
 
 Build and test `ai-usagebar` from a checkout. For the pre-PR gate see
-[CONTRIBUTING.md](CONTRIBUTING.md). For release invariants see
-[CLAUDE.md](CLAUDE.md).
+[CONTRIBUTING.md](CONTRIBUTING.md). For the invariants an agent must hold see
+[AGENTS.md](AGENTS.md); the long form with the release checklist is
+[docs/AGENT-NOTES.md](docs/AGENT-NOTES.md).
 
 - [Prerequisites](#prerequisites)
 - [Build](#build)
