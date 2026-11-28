@@ -49,6 +49,10 @@ pub struct ReadyTab {
     /// OpenCode Go billing-cycle reset day (1-28), when configured. Only set
     /// for OpenCode Go entries.
     pub monthly_cycle_day: Option<u8>,
+    /// Per-window usage samples the pace chart is drawn from. Only OpenCode Go
+    /// reports windows that accumulate, so every other provider leaves this
+    /// empty and its entry carries no `history`.
+    pub history: crate::opencode_go::history::UsageHistory,
 }
 
 impl TabState {
@@ -149,7 +153,7 @@ fn vendors_for_tabs(config: &Config) -> Vec<VendorId> {
 /// Fetch one entry and turn the outcome into its state.
 pub async fn refresh_one(client: &Client, config: &Config, tab: &TabId) -> TabState {
     match build_outcome(client, config, tab).await {
-        Ok(outcome) => {
+        Ok((outcome, history)) => {
             // Resolve the cache age (a duration from "now" at fetch time) into
             // an absolute instant ONCE. Without this, the projection would
             // recompute `Utc::now() - cache_age` on every draw and the
@@ -172,6 +176,7 @@ pub async fn refresh_one(client: &Client, config: &Config, tab: &TabId) -> TabSt
                     VendorId::OpenCodeGo => config.opencode_go.monthly_cycle_day,
                     _ => None,
                 },
+                history,
             }));
             // Quota-threshold notifications: wire-fresh outcomes only — never
             // cached, stale, or failed ones — and best-effort by construction:
@@ -207,7 +212,14 @@ fn api_key_and_cache(
     Ok((api_key, cache))
 }
 
-async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<VendorOutcome> {
+/// The entry's outcome plus its usage history. Only OpenCode Go keeps history;
+/// the balance providers have no window to plot, so they return an empty one
+/// rather than a synthesized series.
+async fn build_outcome(
+    client: &Client,
+    config: &Config,
+    tab: &TabId,
+) -> Result<(VendorOutcome, crate::opencode_go::history::UsageHistory)> {
     let vendor = tab.vendor;
     match vendor {
         VendorId::Openrouter => {
@@ -223,7 +235,7 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
                 DEFAULT_TTL,
             )
             .await?;
-            Ok(outcome.into())
+            Ok((outcome.into(), Default::default()))
         }
         VendorId::Deepseek => {
             let (api_key, cache) = api_key_and_cache(config, vendor, tab.account.as_deref())?;
@@ -231,7 +243,7 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
             let outcome =
                 crate::deepseek::fetch_snapshot(client, &api_key, &cache, &endpoints, DEFAULT_TTL)
                     .await?;
-            Ok(outcome.into())
+            Ok((outcome.into(), Default::default()))
         }
         VendorId::OpenCodeGo => {
             let api_key = crate::opencode_go::creds::resolve_key(
@@ -241,7 +253,7 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
             )?;
             let cache = crate::cache::Cache::for_vendor("opencode-go")?;
             let endpoints = crate::opencode_go::fetch::Endpoints::default();
-            let (outcome, _history) = crate::opencode_go::fetch::fetch_snapshot(
+            let (outcome, history) = crate::opencode_go::fetch::fetch_snapshot(
                 client,
                 &api_key,
                 &cache,
@@ -249,7 +261,7 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
                 DEFAULT_TTL,
             )
             .await?;
-            Ok(outcome.into())
+            Ok((outcome.into(), history))
         }
     }
 }

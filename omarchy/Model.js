@@ -99,8 +99,126 @@ function normalizeEntry(raw) {
     error: error,
     stale: raw.stale === true,
     fetched_at: cleanText(raw.fetched_at, 80),
-    sections: sections
+    sections: sections,
+    history: normalizeHistory(raw.history)
   }
+}
+
+// ---- Usage history and the pace chart -------------------------------------
+//
+// The report carries the samples Rust collected per window
+// (`history.<window> = {resetsAt, start, points: [{t, p}]}`). The panel turns
+// them into deviation from an even burn of the window, in percentage points:
+// `dev = p - elapsed * 100`. Window lengths, and which window starts when, are
+// Rust's business — `start` travels with each window, so nothing here decides
+// what a window is.
+
+var HISTORY_KINDS = ["rolling", "weekly", "monthly"]
+// Only the cumulative windows get a curve: the 5h rolling window empties as
+// requests age out, so a deviation line for it is noise (the widget's rule).
+var CHART_KINDS = ["weekly", "monthly"]
+var CHART_COLORS = { weekly: "#4da3ff", monthly: "#ffb347" }
+// The widget's fixed scale: zero in the middle, deviations clamped to ±30 pp.
+var CHART_Y_MIN = -30
+var CHART_Y_MAX = 30
+// Below this share of the window a projection is meaningless noise.
+var PROJECTION_MIN_FRAC = 0.02
+var MAX_HISTORY_POINTS = 200
+
+function normalizeHistoryWindow(raw) {
+  if (!raw || typeof raw !== "object") return null
+  var start = Number(raw.start)
+  var resetsAt = cleanText(raw.resetsAt, 80)
+  if (!isFinite(start) || start <= 0 || resetsAt === "") return null
+  // Deterministic parse of an absolute instant; no wall clock is read here.
+  var end = Date.parse(resetsAt)
+  if (!isFinite(end) || end <= start) return null
+  var source = Array.isArray(raw.points) ? raw.points : []
+  var points = []
+  // Only the newest samples matter; starting at the tail also bounds the work
+  // an oversized document can cost.
+  var first = Math.max(0, source.length - MAX_HISTORY_POINTS)
+  for (var i = first; i < source.length; i++) {
+    var point = source[i]
+    if (!point || typeof point !== "object") continue
+    var t = Number(point.t)
+    var p = Number(point.p)
+    if (!isFinite(t) || !isFinite(p)) continue
+    points.push({ t: t, p: p })
+  }
+  if (points.length === 0) return null
+  return { start: start, end: end, resets_at: resetsAt, points: points }
+}
+
+function normalizeHistory(raw) {
+  if (!raw || typeof raw !== "object") return null
+  var history = {}
+  var any = false
+  for (var i = 0; i < HISTORY_KINDS.length; i++) {
+    var window = normalizeHistoryWindow(raw[HISTORY_KINDS[i]])
+    if (!window) continue
+    history[HISTORY_KINDS[i]] = window
+    any = true
+  }
+  return any ? history : null
+}
+
+// The chart's fixed vertical scale, exposed so the QML renderer never keeps its
+// own copy of the bounds.
+function chartScale() {
+  return { min: CHART_Y_MIN, max: CHART_Y_MAX }
+}
+
+function clampFraction(value) {
+  if (!isFinite(value)) return 0
+  return Math.max(0, Math.min(1, value))
+}
+
+// Deviation series for the two charted windows of an entry.
+//
+// Returns `{ ready, series: [{ kind, color, points: [{frac, dev, p}], last,
+// projection: {dev, percent} | null }] }`. `ready` is false for anything with
+// fewer than two samples in every charted window — a balance provider, an empty
+// history, or a single reading — and the panel says "still collecting" instead
+// of drawing a line through one point.
+function chartSeries(entry) {
+  var history = entry && entry.history ? entry.history : null
+  var series = []
+  if (!history) return { ready: false, series: series }
+  for (var i = 0; i < CHART_KINDS.length; i++) {
+    var kind = CHART_KINDS[i]
+    var window = history[kind]
+    if (!window) continue
+    var span = window.end - window.start
+    if (!(span > 0)) continue
+    var points = []
+    for (var j = 0; j < window.points.length; j++) {
+      var sample = window.points[j]
+      // Samples taken before this window began belong to the previous period.
+      if (sample.t < window.start) continue
+      var frac = clampFraction((sample.t - window.start) / span)
+      points.push({ frac: frac, dev: sample.p - frac * 100, p: sample.p })
+    }
+    // One sample is a dot, not a trend.
+    if (points.length < 2) continue
+    var last = points[points.length - 1]
+    var projection = null
+    if (last.frac >= PROJECTION_MIN_FRAC && last.p > 0) {
+      // The end-of-window percentage, not the deviation: the label on the
+      // right edge reads "81%", not "+21".
+      var projected = last.p / last.frac
+      if (isFinite(projected))
+        projection = { dev: projected - 100, percent: Math.round(projected) }
+    }
+    series.push({
+      kind: kind,
+      color: CHART_COLORS[kind],
+      points: points,
+      last: last,
+      projection: projection
+    })
+  }
+  return { ready: series.length > 0, series: series }
 }
 
 function parseReport(raw) {

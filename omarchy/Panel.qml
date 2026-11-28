@@ -1099,14 +1099,28 @@ Panel {
     }
   }
 
+  // Pace chart: deviation from an even burn of each cumulative window, in
+  // percentage points. Semantics come from the iOS widget
+  // (opencode-usage-widget.js): fixed ±30 pp scale with zero in the middle,
+  // grid at ±10/±20, the two curves drawn from a shared zero at the left edge,
+  // a dashed projection to the end of each window labelled with its projected
+  // final percentage, a scale column on the left and a label column on the
+  // right — both outside the plot. Only OpenCode Go reports windows that
+  // accumulate; a balance has nothing to plot and gets no canvas.
   component GraphicRow: Column {
     id: graphicRow
-    property var row: null
     spacing: Style.space(8)
 
     readonly property bool forOpenCodeGo: root.entry
       ? String(Model.baseProvider(root.entry.id)) === "opencode-go"
       : false
+    readonly property var chart: graphicRow.forOpenCodeGo && root.entry
+      ? Model.chartSeries(root.entry)
+      : { ready: false, series: [] }
+    readonly property bool canDraw: graphicRow.forOpenCodeGo && graphicRow.chart.ready
+    readonly property var scale: Model.chartScale()
+
+    onChartChanged: graphicCanvas.requestPaint()
 
     Text {
       width: parent.width
@@ -1119,118 +1133,152 @@ Panel {
       visible: graphicRow.forOpenCodeGo
     }
 
+    // An honest empty state: no samples yet is not a flat curve at zero, and
+    // one sample is not a trend.
+    Text {
+      width: parent.width
+      text: root.tr("graphic.collecting")
+      textFormat: Text.PlainText
+      color: root.dim
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      visible: graphicRow.forOpenCodeGo && !graphicRow.canDraw
+    }
+
     Canvas {
       id: graphicCanvas
       width: parent.width
-      height: graphicRow.forOpenCodeGo ? 150 : 0
-      visible: graphicRow.forOpenCodeGo
+      height: graphicRow.canDraw ? Math.round(Style.space(104)) : 0
+      visible: graphicRow.canDraw
 
-      function metricByLabel(label) {
-        var sections = root.entrySections || []
-        for (var i = 0; i < sections.length; i++) {
-          var s = sections[i]
-          if (s && s.type === "metric" && String(s.label || "") === label)
-            return s
-        }
-        return null
-      }
+      // Scale column on the left, projection labels on the right; the plot is
+      // what remains between them (the widget's AXIS_W=24 / LABEL_W=30, sized
+      // here from the caption font so a theme scale cannot clip a label).
+      readonly property int fontPx: Math.round(Style.font.caption)
+      readonly property int axisWidth: Math.round(Style.font.caption * 2.2)
+      readonly property int labelWidth: Math.round(Style.font.caption * 3.2)
 
-      function elapsedFrac(resetAt, windowSecs) {
-        if (!resetAt || !windowSecs) return 0
-        var resetMs = new Date(String(resetAt)).getTime()
-        var nowMs = Number(root.nowMs)
-        if (!isFinite(resetMs)) return 0
-        var startMs = resetMs - Number(windowSecs) * 1000
-        var elapsed = nowMs - startMs
-        return Math.max(0, Math.min(1, elapsed / Number(windowSecs) / 1000))
-      }
+      onWidthChanged: requestPaint()
+      onHeightChanged: requestPaint()
+      onVisibleChanged: if (visible) requestPaint()
 
-      function monthlyElapsedFrac(resetAt) {
-        // OpenCode Go does not report the monthly cycle length (it follows the
-        // subscriber's billing date, 28/29/31 days), so estimate a 30-day
-        // cycle purely to place the monthly marker.
-        if (!resetAt) return 0
-        var resetMs = new Date(String(resetAt)).getTime()
-        var nowMs = Number(root.nowMs)
-        if (!isFinite(resetMs)) return 0
-        var startMs = resetMs - 30 * 86400000
-        var elapsed = nowMs - startMs
-        return Math.max(0, Math.min(1, elapsed / (30 * 86400000)))
+      function yFor(dev, top, plotHeight) {
+        var clamped = root.clamp(dev, graphicRow.scale.min, graphicRow.scale.max)
+        return top + plotHeight * (1 - (clamped - graphicRow.scale.min)
+          / (graphicRow.scale.max - graphicRow.scale.min))
       }
 
       onPaint: {
-        if (!graphicRow.forOpenCodeGo) return
         var ctx = getContext("2d")
-        if (!ctx) return
-        var w = graphicCanvas.width
-        var h = graphicCanvas.height
-        var padX = Style.space(6)
-        var padY = Style.space(6)
-        var plotLeft = padX
-        var plotRight = w - padX
-        var plotTop = padY
-        var plotBottom = h - padY
-        var plotW = plotRight - plotLeft
-        var plotH = plotBottom - plotTop
-
-        function xFor(frac) { return plotLeft + frac * plotW }
-        function yFor(pct) { return plotBottom - Math.min(Math.max(pct, 0), 100) / 100 * plotH }
-
+        if (!ctx || !graphicRow.canDraw) return
+        var w = width
+        var h = height
         ctx.clearRect(0, 0, w, h)
+        if (w <= 0 || h <= 0) return
 
-        // Axes
-        ctx.strokeStyle = root.dim
+        var series = graphicRow.chart.series
+        var pad = Style.space(6)
+        var plotLeft = graphicCanvas.axisWidth
+        var plotRight = Math.max(plotLeft + 1, w - graphicCanvas.labelWidth)
+        var plotTop = pad
+        var plotBottom = h - pad
+        var plotHeight = plotBottom - plotTop
+        var plotWidth = plotRight - plotLeft
+        var fontPx = graphicCanvas.fontPx
+
+        function xFor(frac) {
+          return plotLeft + plotWidth * root.clamp(frac, 0, 1)
+        }
+        function yAt(dev) {
+          return graphicCanvas.yFor(dev, plotTop, plotHeight)
+        }
+
+        // Grid at ±10/±20 (light, dashed) and the even-pace line at zero
+        // (brighter): above it is over-consuming the window, below is ahead.
         ctx.lineWidth = 1
+        ctx.strokeStyle = root.alpha(root.foreground, 0.13)
+        ctx.setLineDash([3, 3])
+        var guides = [-20, -10, 10, 20]
+        for (var g = 0; g < guides.length; g++) {
+          ctx.beginPath()
+          ctx.moveTo(plotLeft, yAt(guides[g]))
+          ctx.lineTo(plotRight, yAt(guides[g]))
+          ctx.stroke()
+        }
+        ctx.setLineDash([])
+        ctx.strokeStyle = root.alpha(root.foreground, 0.45)
         ctx.beginPath()
-        ctx.moveTo(plotLeft, plotBottom)
-        ctx.lineTo(plotRight, plotBottom)
-        ctx.moveTo(plotLeft, plotBottom)
-        ctx.lineTo(plotLeft, plotTop)
+        ctx.moveTo(plotLeft, yAt(0))
+        ctx.lineTo(plotRight, yAt(0))
         ctx.stroke()
 
-        // Linear expected usage: on pace from 0 to 100 across the window
-        ctx.strokeStyle = root.alpha(root.foreground, 0.35)
-        ctx.lineWidth = 1
-        ctx.beginPath()
-        ctx.moveTo(xFor(0), yFor(0))
-        ctx.lineTo(xFor(1), yFor(100))
-        ctx.stroke()
+        var labels = []
+        for (var i = 0; i < series.length; i++) {
+          var line = series[i]
+          var color = line.color
 
-        // Weekly usage line
-        var weekly = metricByLabel("Weekly (7d)")
-        var weeklyPct = weekly ? weekly.percent : 0
-        var weeklyFrac = weekly ? elapsedFrac(weekly.reset_at, weekly.window_secs) : 0
-        ctx.strokeStyle = root.hexGreen
-        ctx.lineWidth = 2
-        ctx.beginPath()
-        ctx.moveTo(xFor(0), yFor(0))
-        ctx.lineTo(xFor(weeklyFrac), yFor(weeklyPct))
-        ctx.stroke()
-        ctx.fillStyle = root.hexGreen
-        ctx.beginPath()
-        ctx.arc(xFor(weeklyFrac), yFor(weeklyPct), 3, 0, 2 * Math.PI)
-        ctx.fill()
+          // Actual deviation. Both curves leave the same zero at the left
+          // edge, which is the start of each window.
+          ctx.strokeStyle = color
+          ctx.lineWidth = 2
+          ctx.beginPath()
+          ctx.moveTo(plotLeft, yAt(0))
+          for (var j = 0; j < line.points.length; j++)
+            ctx.lineTo(xFor(line.points[j].frac), yAt(line.points[j].dev))
+          ctx.stroke()
 
-        // Monthly usage line. When the report carries an exact window length
-        // (cycle day configured in settings), pace against it; otherwise fall
-        // back to a 30-day estimate.
-        var monthly = metricByLabel("Monthly")
-        var monthlyPct = monthly ? monthly.percent : 0
-        var monthlyFrac = monthly
-          ? monthly.window_secs
-            ? elapsedFrac(monthly.reset_at, monthly.window_secs)
-            : monthlyElapsedFrac(monthly.reset_at)
-          : 0
-        ctx.strokeStyle = root.hexOrange
-        ctx.lineWidth = 2
-        ctx.beginPath()
-        ctx.moveTo(xFor(0), yFor(0))
-        ctx.lineTo(xFor(monthlyFrac), yFor(monthlyPct))
-        ctx.stroke()
-        ctx.fillStyle = root.hexOrange
-        ctx.beginPath()
-        ctx.arc(xFor(monthlyFrac), yFor(monthlyPct), 3, 0, 2 * Math.PI)
-        ctx.fill()
+          // Projection: the same straight extension the widget draws, dashed,
+          // ending at the window's close (deviation = projected% - 100).
+          if (line.projection) {
+            ctx.strokeStyle = color
+            ctx.globalAlpha = 0.9
+            ctx.lineWidth = 1.5
+            ctx.setLineDash([4, 3])
+            ctx.beginPath()
+            ctx.moveTo(xFor(line.last.frac), yAt(line.last.dev))
+            ctx.lineTo(plotRight, yAt(line.projection.dev))
+            ctx.stroke()
+            ctx.setLineDash([])
+            ctx.globalAlpha = 1
+            labels.push({
+              y: yAt(line.projection.dev),
+              // The end-of-window percentage, not the deviation.
+              text: line.projection.percent + "%",
+              color: color
+            })
+          }
+
+          // The reading the projection starts from.
+          ctx.fillStyle = color
+          ctx.beginPath()
+          ctx.arc(xFor(line.last.frac), yAt(line.last.dev), 3, 0, 2 * Math.PI)
+          ctx.fill()
+        }
+
+        ctx.font = fontPx + "px \"" + root.fontFamily + "\""
+
+        // Scale column: the widget's +30 / 0 / -30, right-aligned against the
+        // plot's left edge. Every other tick would be noise at this height.
+        ctx.textAlign = "right"
+        ctx.fillStyle = root.dim
+        var ticks = [graphicRow.scale.max, 0, graphicRow.scale.min]
+        for (var s = 0; s < ticks.length; s++) {
+          var text = ticks[s] > 0 ? "+" + ticks[s] : String(ticks[s])
+          ctx.fillText(text, plotLeft - Style.space(4), yAt(ticks[s]) + fontPx / 3)
+        }
+
+        // Projection labels sit outside the plot, pushed apart so two close
+        // ends stay readable (the widget's 10pt rule).
+        labels.sort(function(a, b) { return a.y - b.y })
+        for (var l = 1; l < labels.length; l++)
+          if (labels[l].y - labels[l - 1].y < fontPx + 2)
+            labels[l].y = labels[l - 1].y + fontPx + 2
+        ctx.textAlign = "left"
+        for (var k = 0; k < labels.length; k++) {
+          ctx.fillStyle = labels[k].color
+          ctx.fillText(labels[k].text, plotRight + Style.space(4), root.clamp(
+            labels[k].y, fontPx, h - fontPx / 2) + fontPx / 3)
+        }
       }
     }
   }

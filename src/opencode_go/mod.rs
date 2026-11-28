@@ -2,6 +2,7 @@
 
 pub mod creds;
 pub mod fetch;
+pub mod history;
 pub mod types;
 
 #[cfg(test)]

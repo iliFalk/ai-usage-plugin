@@ -2,6 +2,18 @@
 
 ### Added
 
+- **The Omarchy panel plots the pace of the OpenCode Go windows.** A Canvas in
+  the popup draws each cumulative window's deviation from an even burn, in
+  percentage points: zero in the middle with a light grid, weekly in
+  `#4da3ff`, monthly in `#ffb347`, a dashed projection to the end of the window
+  labelled with its projected final percentage, a scale column on the left and
+  the labels outside the plot on the right. Rust owns the series: `usage --json`
+  now carries `history.<window> = {resetsAt, start, points: [{t, p}]}`, kept in
+  the cache so it survives a restart, capped at 200 samples, and reset on the
+  widget's three signs (a new `resetsAt`, a `resetsAt` already passed, a drop
+  larger than 0.5 pp inside the window). OpenRouter and DeepSeek report a
+  balance rather than a window, so they get no curve; a thin history says it is
+  still collecting instead of drawing a synthetic line.
 - **The Omarchy panel sets the quota notifications.** Settings → Notifications
   carries the enable switch and the threshold; the threshold is accepted only
   in 1..=100, checked in Rust before anything is persisted. Until now both lived

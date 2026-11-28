@@ -607,6 +607,7 @@ mod tests {
             fetched_at: Some(now() - chrono::Duration::seconds(15)),
             display,
             monthly_cycle_day: None,
+            history: Default::default(),
         }))
     }
 

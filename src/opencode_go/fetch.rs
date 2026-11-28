@@ -8,6 +8,7 @@ use crate::cache::{Cache, acquire_lock_async};
 use crate::error::{AUTH_FAILURE_MESSAGE, AppError, Result};
 use crate::vendor::{MAX_BODY_BYTES, read_body_capped};
 
+use super::history::UsageHistory;
 use super::types::{Usage, parse_usage};
 
 pub const BASE_URL: &str = "https://opencode.ai/zen/go/v1/usage";
@@ -15,8 +16,6 @@ pub const BASE_URL: &str = "https://opencode.ai/zen/go/v1/usage";
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 const LOCK_TIMEOUT: Duration = Duration::from_secs(15);
 const SCHEMA_ERROR: &str = "OpenCode Go usage response schema mismatch";
-/// Maximum history points kept per window (last ~200 samples).
-const MAX_HIST_POINTS: usize = 200;
 
 #[derive(Debug, Clone)]
 pub struct Endpoints {
@@ -34,61 +33,6 @@ impl Default for Endpoints {
 /// This vendor's [`Outcome`](crate::outcome::Outcome) — the shared shape,
 /// specialised to its snapshot.
 pub type FetchOutcome = crate::outcome::Outcome<Usage>;
-
-/// One historical sample: timestamp (ms since epoch) and usage percent.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct HistoryPoint {
-    pub t: i64,
-    pub p: f64,
-}
-
-/// Historical samples for one window.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
-pub struct HistoryWindow {
-    pub resets_at: Option<String>,
-    pub points: Vec<HistoryPoint>,
-}
-
-/// All history for all windows.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
-pub struct UsageHistory {
-    pub rolling: HistoryWindow,
-    pub weekly: HistoryWindow,
-    pub monthly: HistoryWindow,
-}
-
-impl UsageHistory {
-    /// Append a fresh sample for each window, keeping at most MAX_HIST_POINTS.
-    /// Resets the points when the window's `resetsAt` changes.
-    fn merge(&mut self, usage: &Usage, now_ms: i64) {
-        let windows = [
-            ("rolling", usage.rolling.as_ref()),
-            ("weekly", usage.weekly.as_ref()),
-            ("monthly", usage.monthly.as_ref()),
-        ];
-        for (name, window) in windows {
-            let hist = match name {
-                "rolling" => &mut self.rolling,
-                "weekly" => &mut self.weekly,
-                _ => &mut self.monthly,
-            };
-            if let Some(w) = window {
-                let resets_at = Some(w.resets_at.to_rfc3339());
-                if hist.resets_at != resets_at {
-                    hist.resets_at = resets_at;
-                    hist.points.clear();
-                }
-                hist.points.push(HistoryPoint {
-                    t: now_ms,
-                    p: w.percent,
-                });
-                if hist.points.len() > MAX_HIST_POINTS {
-                    hist.points.drain(..hist.points.len() - MAX_HIST_POINTS);
-                }
-            }
-        }
-    }
-}
 
 /// Write a cache payload including both usage and history.
 fn write_cache_payload(target: &str, usage: &Usage, history: &UsageHistory) -> Result<Vec<u8>> {
@@ -132,29 +76,32 @@ pub async fn fetch_snapshot(
     cache.ensure_dir()?;
     let _lock = acquire_lock_async(&cache.lock_path(), LOCK_TIMEOUT).await?;
     let target = target_key(endpoints, api_key);
-    let now_ms = chrono::Utc::now().timestamp_millis();
+    // Read the history the previous fetch left BEFORE anything is written: a
+    // live fetch appends to that series (a fresh `UsageHistory::default` would
+    // make every fetch the first one), and a fallback serves the samples that
+    // belong to the payload it is serving.
+    let cached = cached_history(cache, &target);
 
     if let Some(bytes) = cache.fresh_payload(ttl)?
         && let Ok((snapshot, history)) = parse_cache_full(&bytes, &target)
     {
-        let history = history.unwrap_or_default();
         return Ok((
             crate::outcome::Outcome::cached(snapshot, cache, false),
-            history,
+            history.unwrap_or(cached),
         ));
     }
 
     match fetch_live(client, &endpoints.usage, api_key).await {
         Ok(snapshot) => {
-            let mut history = UsageHistory::default();
-            history.merge(&snapshot, now_ms);
+            let mut history = cached;
+            history.merge(&snapshot, chrono::Utc::now());
             let body = write_cache_payload(&target, &snapshot, &history)?;
             cache.write_payload(&body)?;
             Ok((crate::outcome::Outcome::fresh(snapshot), history))
         }
         Err(error @ AppError::Transport(_)) => {
             let outcome = fallback_or_error(cache, None, &target, error)?;
-            Ok((outcome, UsageHistory::default()))
+            Ok((outcome, cached))
         }
         Err(AppError::Http { status, .. }) => {
             let message = status_message(status).to_string();
@@ -169,7 +116,7 @@ pub async fn fetch_snapshot(
                     body: message,
                 },
             )?;
-            Ok((outcome, UsageHistory::default()))
+            Ok((outcome, cached))
         }
         Err(AppError::Schema(_)) => {
             let message = SCHEMA_ERROR.to_string();
@@ -181,13 +128,26 @@ pub async fn fetch_snapshot(
                 &target,
                 AppError::Schema(message),
             )?;
-            Ok((outcome, UsageHistory::default()))
+            Ok((outcome, cached))
         }
         Err(error) => {
             let outcome = fallback_or_error(cache, None, &target, error)?;
-            Ok((outcome, UsageHistory::default()))
+            Ok((outcome, cached))
         }
     }
+}
+
+/// The history stored with the cached payload for this endpoint and account.
+/// Anything unreadable counts as no history: losing the samples is better than
+/// serving another account's curve.
+fn cached_history(cache: &Cache, target: &str) -> UsageHistory {
+    cache
+        .maybe_payload()
+        .ok()
+        .flatten()
+        .and_then(|bytes| parse_cache_full(&bytes, target).ok())
+        .and_then(|(_, history)| history)
+        .unwrap_or_default()
 }
 
 async fn fetch_live(client: &reqwest::Client, url: &str, api_key: &str) -> Result<Usage> {
@@ -339,6 +299,71 @@ mod tests {
         assert_eq!(output.snapshot.rolling.expect("rolling").percent, 12.3);
         assert!(!output.stale);
         assert!(output.last_error.is_none());
+        mock.assert_async().await;
+    }
+
+    /// Resets far enough in the future that the "resetsAt has passed" rule
+    /// never fires, so only accumulation and the cap are under test.
+    const FUTURE_BODY: &str = r#"{
+        "usage": {
+            "weekly": {"status":"ok","percent":10.0,"resetsAt":"2030-01-09T00:00:00Z"}
+        }
+    }"#;
+
+    #[tokio::test]
+    async fn history_accumulates_across_fetches_and_survives_a_restart() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("GET", "/usage")
+            .with_status(200)
+            .with_body(FUTURE_BODY)
+            .expect(3)
+            .create_async()
+            .await;
+        let (dir, cache) = cache_fixture();
+        let endpoints = Endpoints {
+            usage: format!("{}/usage", server.url()),
+        };
+
+        let (_, first) = fetch_snapshot(
+            &reqwest::Client::new(),
+            "test-key",
+            &cache,
+            &endpoints,
+            Duration::ZERO,
+        )
+        .await
+        .expect("first fetch");
+        assert_eq!(first.weekly.points.len(), 1);
+
+        let (_, second) = fetch_snapshot(
+            &reqwest::Client::new(),
+            "test-key",
+            &cache,
+            &endpoints,
+            Duration::ZERO,
+        )
+        .await
+        .expect("second fetch");
+        assert_eq!(
+            second.weekly.points.len(),
+            2,
+            "a live fetch appends to the cached series instead of starting over"
+        );
+
+        // A new `Cache` value over the same directory is what a restarted
+        // binary sees: the samples come back from disk.
+        let reopened = Cache::at(dir.path().join("opencode-go"));
+        let (_, third) = fetch_snapshot(
+            &reqwest::Client::new(),
+            "test-key",
+            &reopened,
+            &endpoints,
+            Duration::ZERO,
+        )
+        .await
+        .expect("fetch after restart");
+        assert_eq!(third.weekly.points.len(), 3);
         mock.assert_async().await;
     }
 
