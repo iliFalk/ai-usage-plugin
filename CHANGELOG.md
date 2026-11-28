@@ -28,7 +28,6 @@
   the author and maintainer is `Ilja <ilja@falknest.net>`. The binary, the crate
   and the `~/.config/ai-usagebar/` path keep their names: they are functional,
   not a brand.
-- Upstream traceability: this is a fork of [`AkitaOnRails/ai-usagebar`](https://github.com/AkitaOnRails/ai-usagebar) and `LICENSE` keeps its `Copyright (c) 2026 AkitaOnRails` notice as MIT requires, alongside `Copyright (c) 2026 Ilja`.
 
 ### Removed
 
