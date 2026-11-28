@@ -34,6 +34,10 @@ the library. Its surface is two commands plus `--help`/`--version`:
   against a newer binary.
 - Own the failure policy (serve the last good payload, or report the error that
   caused the failure) and the rate-limit backoff.
+- Keep the per-window usage history a frontend needs to show a trend, and
+  export it in the report. OpenCode Go reports three cumulative windows
+  (`rolling`, `weekly`, `monthly`); a balance provider has no window and
+  therefore no history.
 
 ## Boundary
 
@@ -53,6 +57,11 @@ Inside, by concern:
   order exists.
 - **Report** — `usage`'s document and text output. Enumerates, projects, formats;
   it adds no provider knowledge.
+- **History** — `opencode_go::history`: the samples kept in the provider's cache
+  (`hist` in the same atomically written payload) and the `history` object of the
+  report. It applies the reset rules, caps the series, and derives each window's
+  `start` (5h, 7d, or the billing month) because the monthly start depends on
+  configuration.
 - **Settings** — the JSON snapshot of editable configuration and the
   stdin-patch apply path (toml_edit, atomic write). It is the only writer of
   `config.toml`, and it validates before writing.
@@ -84,6 +93,16 @@ Forbidden reaches:
   sanitized at the sink before it reaches the panel.
 - Tests are hermetic: no test reads or writes a real `$HOME`/`$XDG` path, and
   live-API tests stay `#[ignore]`d.
+- Usage history is capped at 200 samples per window and survives a restart: a
+  live fetch appends to the series in the cache instead of starting a new one.
+- A window's series resets on exactly three signs: `resetsAt` changed, `resetsAt`
+  already passed, or the reported percentage dropped by more than 0.5 pp inside
+  the same window. The drop rule excludes `rolling`, whose percentage falls as
+  requests age out of it, so a drop there is a reading and not a reset.
+- The document's `history.<window>` carries `{resetsAt, start, points: [{t, p}]}`
+  — `t` and `start` in milliseconds since the epoch — and is *absent* for a
+  window with no samples and for every provider without windows. Optional, never
+  null: the report contract stays additive.
 
 ## Out of scope
 

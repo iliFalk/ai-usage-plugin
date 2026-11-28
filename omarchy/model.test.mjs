@@ -190,6 +190,108 @@ assert.equal(new Set(marks).size, marks.length);
 for (const file of marks)
   assert.ok(fs.existsSync(new URL('./icons/' + file, import.meta.url)), file);
 
+// ---- usage history and the pace chart ----
+// Rust collects one sample per fetch per window and reports the window's start
+// with them. The panel's only job is the deviation arithmetic: an even burn of
+// the window is the zero line, so `dev = p - elapsed * 100`.
+const WEEK_END = Date.parse('2026-08-20T00:00:00Z');
+const WEEK_START = WEEK_END - 7 * 86400000;
+const SPAN = WEEK_END - WEEK_START;
+
+function historyEntry(history) {
+  return model.parseReport(JSON.stringify({
+    entries: [{id: 'opencode-go', error: null, sections: [], history: history}],
+  })).entries[0];
+}
+
+const charted = historyEntry({
+  weekly: {
+    resetsAt: '2026-08-20T00:00:00+00:00',
+    start: WEEK_START,
+    points: [
+      {t: WEEK_START + SPAN * 0.25, p: 40},
+      {t: WEEK_START + SPAN * 0.5, p: 70},
+    ],
+  },
+  rolling: {resetsAt: '2026-08-16T20:00:00+00:00', start: WEEK_START, points: []},
+});
+assert.equal(charted.history.weekly.start, WEEK_START);
+assert.equal(charted.history.weekly.points.length, 2);
+// A window with no samples is dropped rather than kept as an empty curve.
+assert.equal(charted.history.rolling, undefined);
+
+const chart = model.chartSeries(charted);
+assert.equal(chart.ready, true);
+// Only the cumulative windows are charted: the 5h window empties as requests
+// age out, so it has no curve.
+assert.deepEqual(Array.from(chart.series, line => line.kind), ['weekly']);
+assert.equal(chart.series[0].color, '#4da3ff');
+assert.deepEqual(Array.from(chart.series[0].points, p => [p.frac, p.dev]), [[0.25, 15], [0.5, 20]]);
+// The projection starts from the last reading and is joined to the window's
+// close: 70% in half a window projects to 140%, i.e. +40 pp of deviation.
+assert.equal(chart.series[0].last.frac, 0.5);
+assert.deepEqual(JSON.parse(JSON.stringify(chart.series[0].projection)), {dev: 40, percent: 140});
+// The right-hand label names the projected percentage, never the deviation.
+assert.equal(model.chartSeries(charted).series[0].projection.percent, 140);
+
+// Two curves, in report order, with the widget's colors.
+const both = historyEntry({
+  weekly: {resetsAt: '2026-08-20T00:00:00+00:00', start: WEEK_START,
+    points: [{t: WEEK_START + SPAN * 0.1, p: 5}, {t: WEEK_START + SPAN * 0.2, p: 9}]},
+  monthly: {resetsAt: '2026-09-15T00:00:00+00:00', start: WEEK_START,
+    points: [{t: WEEK_START + SPAN * 0.1, p: 40}, {t: WEEK_START + SPAN * 0.3, p: 60}]},
+});
+assert.deepEqual(Array.from(model.chartSeries(both).series, line => line.kind), ['weekly', 'monthly']);
+assert.deepEqual(Array.from(model.chartSeries(both).series, line => line.color), ['#4da3ff', '#ffb347']);
+
+// Nothing to plot, no curve: an empty history, a single reading, or a provider
+// that reports a balance instead of a window.
+assert.equal(model.chartSeries(historyEntry(undefined)).ready, false);
+assert.equal(model.chartSeries(historyEntry({
+  weekly: {resetsAt: '2026-08-20T00:00:00+00:00', start: WEEK_START,
+    points: [{t: WEEK_START + SPAN * 0.5, p: 70}]},
+})).ready, false);
+assert.equal(model.chartSeries(openrouter).ready, false);
+assert.equal(model.chartSeries(deepseek).ready, false);
+assert.equal(model.chartSeries(null).series.length, 0);
+
+// Below 2% of the window a projection is noise, and a window that is exactly
+// at zero has nothing to extrapolate.
+const tooEarly = model.chartSeries(historyEntry({
+  weekly: {resetsAt: '2026-08-20T00:00:00+00:00', start: WEEK_START,
+    points: [{t: WEEK_START + SPAN * 0.005, p: 1}, {t: WEEK_START + SPAN * 0.01, p: 2}]},
+}));
+assert.equal(tooEarly.ready, true);
+assert.equal(tooEarly.series[0].projection, null);
+
+// Samples from the previous period are not part of this window.
+const stale = model.chartSeries(historyEntry({
+  weekly: {resetsAt: '2026-08-20T00:00:00+00:00', start: WEEK_START,
+    points: [{t: WEEK_START - 60000, p: 90}, {t: WEEK_START + SPAN * 0.2, p: 9}]},
+}));
+assert.equal(stale.ready, false, 'one sample inside the window is not a curve');
+
+// The cap is the widget's 200 newest samples, and a hostile document cannot
+// make the panel walk a million points.
+const many = historyEntry({
+  weekly: {resetsAt: '2026-08-20T00:00:00+00:00', start: WEEK_START,
+    points: Array.from({length: 250}, (_, i) => ({t: WEEK_START + i, p: i % 100}))},
+});
+assert.equal(many.history.weekly.points.length, 200);
+assert.equal(many.history.weekly.points[0].t, WEEK_START + 50);
+assert.equal(many.history.weekly.points[199].t, WEEK_START + 249);
+// Garbage in a window drops that window, never the whole report.
+const junk = historyEntry({
+  weekly: {resetsAt: 'not-a-date', start: WEEK_START, points: [{t: 1, p: 1}, {t: 2, p: 2}]},
+  monthly: {resetsAt: '2026-09-15T00:00:00+00:00', start: WEEK_START,
+    points: [{t: WEEK_START + 1, p: 'x'}, {t: WEEK_START + 2, p: 3}]},
+});
+assert.equal(junk.history.weekly, undefined);
+assert.equal(junk.history.monthly.points.length, 1);
+
+// The scale is fixed and comes from one place.
+assert.deepEqual({min: model.chartScale().min, max: model.chartScale().max}, {min: -30, max: 30});
+
 // ---- what the bar draws ----
 // `auto` keeps the historical highest-percent window; a pin chooses one window
 // class by its stated length, and a pin the provider does not offer falls back
@@ -1324,6 +1426,15 @@ for (const qmlSource of [panelSource, settingsViewSource]) {
 assert.match(panelSource, /command:\s*\["\/usr\/bin\/env",\s*"ai-usagebar",\s*"usage",\s*"--json"\]/);
 assert.doesNotMatch(panelSource, /command:\s*\["(?:\/usr\/bin\/)?(?:ba)?sh"/);
 assert.match(panelSource, /onExited:\s*function\(exitCode\)/);
+// The pace chart draws what Model.chartSeries derives; the QML keeps no
+// provider or window table of its own, and says so when there is no history.
+assert.match(panelSource, /Model\.chartSeries\(root\.entry\)/);
+assert.match(panelSource, /root\.tr\("graphic\.collecting"\)/);
+assert.match(panelSource, /Canvas\s*\{/);
+assert.match(panelSource, /ctx\.setLineDash\(/);
+assert.doesNotMatch(panelSource, /#4da3ff|#ffb347/, 'curve colors live in Model.js');
+assert.match(source, /#4da3ff/);
+assert.match(source, /#ffb347/);
 assert.match(panelSource, /Model\.launchErrorMessage\(/);
 
 assert.match(settingsViewSource, /command:\s*\["ai-usagebar",\s*"settings",\s*"show"\]/);

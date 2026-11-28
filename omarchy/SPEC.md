@@ -20,14 +20,15 @@ binary; it holds no provider knowledge.
 - `BarWidget.qml` — the bar slot. Renders one chip, one chip per provider, or a
   scrolling chip from the report, and owns click/hover routing to the popup.
 - `Panel.qml` — the popup: per-provider header, metric list with reset countdowns
-  and money, severity colours, provider switching, and the loading / stale / error
-  states.
+  and money, severity colours, provider switching, the OpenCode Go pace chart,
+  and the loading / stale / error states.
 - `SettingsView.qml` — the settings page: primary provider, per-provider on/off,
   API keys, hidden metrics, display mode, monthly cycle day, and the
   quota-threshold notification section.
 - `Model.js` — the whole data layer: parses `ai-usagebar usage --json`, decides
   what the bar and panel draw, builds the `settings apply` patch, and owns the
-  formatting rules the panel uses.
+  formatting rules the panel uses — including the pace chart's deviation
+  arithmetic and its fixed ±30 pp scale.
 - `I18n.js` / `BrandMark.qml` / `icons/` — translations and provider marks.
 
 ## Boundary
@@ -39,6 +40,16 @@ The panel talks to the binary through exactly two commands, both launched with
   endpoint, never reads a credential, and never reads `config.toml`.
 - `ai-usagebar settings show` / `ai-usagebar settings apply` — the settings
   snapshot and its patch (JSON on stdin).
+
+The pace chart draws the report's `history` and nothing else. For each window
+the panel keeps `dev = percent - elapsed * 100` — the deviation, in percentage
+points, from an even burn of that window — with `elapsed` taken from the
+`start`/`resetsAt` pair Rust ships. Zero is the even-pace line, the two curves
+are the cumulative windows in their fixed colours (weekly `#4da3ff`, monthly
+`#ffb347`), and the dashed projection runs to the window's close, labelled with
+the projected final percentage rather than the deviation. Chart, scale and
+label columns are drawn on a Canvas inside `Panel.qml`; the curve math lives in
+`Model.js` so `model.test.mjs` can exercise it without a Quickshell runtime.
 
 Everything else is plugin state: the Omarchy settings store is used only for
 presentation preferences (show value, brand icons, show all, window choice, show
@@ -60,6 +71,12 @@ without a Quickshell runtime.
   arrives in all of them or not at all.
 - A binary older than the panel may send fewer settings fields: a missing field
   hides its section rather than showing an invented default.
+- A provider is charted only if it reports accumulating windows. OpenRouter and
+  DeepSeek report a balance with no `resetsAt`, so they get no canvas and no
+  filler; the chart is drawn for OpenCode Go alone.
+- A thin history is a stated state, not a curve: fewer than two samples in a
+  window means the panel says history is still collecting. No synthetic point,
+  no flat line at zero.
 
 ## Out of scope
 

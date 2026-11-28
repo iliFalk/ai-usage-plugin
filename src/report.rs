@@ -41,6 +41,11 @@ struct Entry {
     error: Option<String>,
     stale: bool,
     fetched_at: Option<DateTime<Utc>>,
+    /// Per-window usage samples, present only for a provider whose windows
+    /// accumulate (OpenCode Go). Absent — not null — everywhere else: a balance
+    /// has no window to plot, and inventing one would put a fake curve on the
+    /// panel.
+    history: Option<crate::opencode_go::history::ReportHistory>,
 }
 
 /// Lossless machine-readable projection of one panel row. `metrics` remains
@@ -184,6 +189,10 @@ fn entry_from_state(tab: &TabId, state: &TabState, now: DateTime<Utc>) -> Entry 
         stale: matches!(state, TabState::Ready(ready) if ready.stale),
         fetched_at: match state {
             TabState::Ready(ready) => ready.fetched_at,
+            _ => None,
+        },
+        history: match state {
+            TabState::Ready(ready) => ready.history.report(ready.monthly_cycle_day),
             _ => None,
         },
     };
@@ -335,7 +344,7 @@ fn json_rows(entries: &[Entry]) -> Vec<serde_json::Value> {
                     _ => None,
                 })
                 .collect::<Vec<_>>();
-            json!({
+            let mut row = json!({
                 "id": entry.id,
                 "name": entry.name,
                 "display_name": entry.display_name,
@@ -348,7 +357,13 @@ fn json_rows(entries: &[Entry]) -> Vec<serde_json::Value> {
                 "fetched_at": entry.fetched_at,
                 "metrics": metrics,
                 "sections": entry.sections,
-            })
+            });
+            // Absent, never null — the same rule the optional section fields
+            // follow, so a panel from before this field keeps working.
+            if let Some(history) = &entry.history {
+                row["history"] = json!(history);
+            }
+            row
         })
         .collect()
 }
@@ -455,6 +470,7 @@ mod tests {
             fetched_at: Some(now() - chrono::Duration::seconds(20)),
             display: DisplayPrefs::default(),
             monthly_cycle_day: None,
+            history: Default::default(),
         }))
     }
 
@@ -530,6 +546,88 @@ mod tests {
         let value = document(std::slice::from_ref(&entry), None);
         assert_eq!(value["entries"][0]["status"], "error");
         assert_eq!(value["entries"][0]["error"], "no API key");
+    }
+
+    fn opencode_go_with_history() -> TabState {
+        let mut state = ready(VendorSnapshot::OpenCodeGo(
+            crate::opencode_go::types::parse_usage(&serde_json::json!({
+                "usage": {
+                    "weekly": {
+                        "status": "ok",
+                        "percent": 42.0,
+                        "resetsAt": "2026-08-20T00:00:00Z"
+                    },
+                    "monthly": {
+                        "status": "ok",
+                        "percent": 61.0,
+                        "resetsAt": "2026-09-15T00:00:00Z"
+                    }
+                }
+            }))
+            .expect("fixture parses"),
+        ));
+        if let TabState::Ready(ready) = &mut state {
+            ready.history.weekly = crate::opencode_go::history::WindowHistory {
+                resets_at: Some("2026-08-20T00:00:00+00:00".into()),
+                points: vec![
+                    crate::opencode_go::history::HistoryPoint {
+                        t: 1_787_000_000_000,
+                        p: 30.0,
+                    },
+                    crate::opencode_go::history::HistoryPoint {
+                        t: 1_787_003_600_000,
+                        p: 42.0,
+                    },
+                ],
+            };
+        }
+        state
+    }
+
+    #[test]
+    fn only_the_opencode_go_entry_carries_usage_history() {
+        let opencode = entry_from_state(
+            &TabId::vendor(VendorId::OpenCodeGo),
+            &opencode_go_with_history(),
+            now(),
+        );
+        let weekly = &opencode.history.as_ref().expect("history").weekly;
+        let weekly = weekly.as_ref().expect("weekly window");
+        assert_eq!(weekly.points.len(), 2);
+        assert_eq!(weekly.points[1].p, 42.0);
+        // 7 days before the reset instant.
+        assert_eq!(weekly.start, 1_786_579_200_000);
+
+        let openrouter = entry_from_state(
+            &TabId::vendor(VendorId::Openrouter),
+            &ready(openrouter()),
+            now(),
+        );
+        assert!(
+            openrouter.history.is_none(),
+            "a balance has no window to plot"
+        );
+
+        let entries = vec![opencode, openrouter];
+        let value = document(&entries, None);
+        let rows = value["entries"].as_array().expect("entries");
+        assert_eq!(
+            rows[0]["history"]["weekly"]["resetsAt"],
+            "2026-08-20T00:00:00+00:00"
+        );
+        assert_eq!(
+            rows[0]["history"]["weekly"]["points"][0]["t"],
+            1_787_000_000_000.0
+        );
+        assert_eq!(rows[0]["history"]["weekly"]["points"][0]["p"], 30.0);
+        assert!(
+            rows[0]["history"].get("rolling").is_none(),
+            "a window with no samples is absent"
+        );
+        assert!(
+            rows[1].get("history").is_none(),
+            "no history key at all, not a null one"
+        );
     }
 
     #[test]
