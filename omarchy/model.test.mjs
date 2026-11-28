@@ -854,32 +854,32 @@ assert.equal(model.providerName(null), 'AI usage');
     provider: '', refreshIntervalSec: 90, futureSetting: {keep: true}, id: 'stale-id',
   };
   const selectedWidgetSettings = model.settingsWithSelectedEntry(
-    priorWidgetSettings, 'akitaonrails.ai-usagebar', 'deepseek@work');
+    priorWidgetSettings, 'iljafalk.ai-usage', 'deepseek@work');
   assert.deepEqual(JSON.parse(JSON.stringify(selectedWidgetSettings)), {
-    id: 'akitaonrails.ai-usagebar',
+    id: 'iljafalk.ai-usage',
     provider: '',
     refreshIntervalSec: 90,
     futureSetting: {keep: true},
     lastSelectedEntryId: 'deepseek@work',
   });
   assert.equal(priorWidgetSettings.lastSelectedEntryId, undefined);
-  assert.equal(model.settingsWithSelectedEntry({}, 'akitaonrails.ai-usagebar', ''), null);
+  assert.equal(model.settingsWithSelectedEntry({}, 'iljafalk.ai-usage', ''), null);
   assert.equal(model.settingsWithSelectedEntry({}, '', 'deepseek@work'), null);
   const hiddenValueSettings = model.settingsWithOverrides(
-    selectedWidgetSettings, 'akitaonrails.ai-usagebar', {showValue: false});
+    selectedWidgetSettings, 'iljafalk.ai-usage', {showValue: false});
   assert.equal(hiddenValueSettings.showValue, false);
   assert.equal(hiddenValueSettings.lastSelectedEntryId, 'deepseek@work');
   assert.equal(selectedWidgetSettings.showValue, undefined);
   const shownProviderSettings = model.settingsWithOverrides(
-    hiddenValueSettings, 'akitaonrails.ai-usagebar', {showProvider: true});
+    hiddenValueSettings, 'iljafalk.ai-usage', {showProvider: true});
   assert.equal(shownProviderSettings.showProvider, true);
   assert.equal(shownProviderSettings.showValue, false);
   assert.equal(shownProviderSettings.lastSelectedEntryId, 'deepseek@work');
   assert.equal(hiddenValueSettings.showProvider, undefined);
-  const protectedSettings = model.settingsWithOverrides({}, 'akitaonrails.ai-usagebar', {
+  const protectedSettings = model.settingsWithOverrides({}, 'iljafalk.ai-usage', {
     id: 'wrong-id', constructor: 'ignored', prototype: 'ignored', showValue: false,
   });
-  assert.equal(protectedSettings.id, 'akitaonrails.ai-usagebar');
+  assert.equal(protectedSettings.id, 'iljafalk.ai-usage');
   assert.notEqual(protectedSettings.constructor, 'ignored');
   assert.equal(protectedSettings.prototype, undefined);
   assert.equal(model.settingsWithOverrides({}, '', {}), null);
@@ -1011,7 +1011,7 @@ assert.equal(model.errorMessage(' boom '), 'boom');
 // the widget silently stuck on its loading state.
 assert.match(model.launchErrorMessage(127, 'env: ai-usagebar: No such file or directory'),
   /ai-usagebar is not installed/);
-assert.match(model.launchErrorMessage(127, ''), /omarchy pkg aur add ai-usagebar-bin/);
+assert.match(model.launchErrorMessage(127, ''), /omarchy pkg aur add ai-usagebar-ilifalk-bin/);
 assert.equal(model.launchErrorMessage(1, 'boom'), 'boom');
 assert.equal(model.launchErrorMessage(0, ''), 'The usage command failed without an error message.');
 

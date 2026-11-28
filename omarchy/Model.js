@@ -1017,7 +1017,7 @@ function errorMessage(value) {
 // its loading state with no way to explain that the binary was not installed.
 function launchErrorMessage(exitCode, stderrText) {
   if (Number(exitCode) === 127)
-    return "ai-usagebar is not installed. The plugin is only the display frontend. Install the binary with: omarchy pkg aur add ai-usagebar-bin"
+    return "ai-usagebar is not installed. The plugin is only the display frontend. Install the binary with: omarchy pkg aur add ai-usagebar-ilifalk-bin"
   return errorMessage(stderrText)
 }
 

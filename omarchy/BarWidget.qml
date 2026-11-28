@@ -10,7 +10,7 @@ import "Model.js" as Model
 // collection and presentation.
 BarWidget {
   id: root
-  moduleName: "akitaonrails.ai-usagebar"
+  moduleName: "iljafalk.ai-usage"
 
   readonly property var panelItem: panelLoader.item
   readonly property bool opened: panelItem ? panelItem.opened === true : false

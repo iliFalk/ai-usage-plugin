@@ -15,8 +15,8 @@ The plugin does not install its executable dependency. Install `ai-usagebar`
 first, then install this repository as the plugin:
 
 ```bash
-omarchy pkg aur add ai-usagebar-bin
-omarchy plugin add https://github.com/akitaonrails/ai-usagebar.git --enable
+omarchy pkg aur add ai-usagebar-ilifalk-bin
+omarchy plugin add https://github.com/iliFalk/ai-usage-plugin.git --enable
 ```
 
 To use AI Usage in place of Quattro's default Agents widget, disable the stock
@@ -32,8 +32,8 @@ button and loads `Panel.qml` inside the same plugin. Update or remove it with
 the normal plugin commands:
 
 ```bash
-omarchy plugin update akitaonrails.ai-usagebar
-omarchy plugin remove akitaonrails.ai-usagebar
+omarchy plugin update iljafalk.ai-usage
+omarchy plugin remove iljafalk.ai-usage
 ```
 
 ## Controls
@@ -73,8 +73,8 @@ omarchy plugin remove akitaonrails.ai-usagebar
   Enter, or Space refreshes, Tab moves to the neighboring bar panel, and Esc
   closes. Mouse-wheel and touchpad scrolling cover long settings forms faster;
   changes to settings take effect only after the Save button at the bottom.
-- Shell: `omarchy-shell shell summon akitaonrails.ai-usagebar '{}'` opens the
-  panel and `omarchy-shell shell hide akitaonrails.ai-usagebar` closes it.
+- Shell: `omarchy-shell shell summon iljafalk.ai-usage '{}'` opens the
+  panel and `omarchy-shell shell hide iljafalk.ai-usage` closes it.
 
 The panel keeps the last successful report visible when a refresh fails and
 labels it accordingly. Provider-level stale cache responses and hard errors
@@ -133,44 +133,44 @@ can be changed through Omarchy's bar UI or CLI:
 
 ```bash
 # Show only one entry. Use an id printed by `ai-usagebar usage --json`.
-omarchy bar set akitaonrails.ai-usagebar provider openrouter
-omarchy bar set akitaonrails.ai-usagebar provider deepseek@work
+omarchy bar set iljafalk.ai-usage provider openrouter
+omarchy bar set iljafalk.ai-usage provider deepseek@work
 
 # Empty means all configured entries, with switching in the panel.
-omarchy bar set akitaonrails.ai-usagebar provider ''
+omarchy bar set iljafalk.ai-usage provider ''
 
 # Numeric values need --json so shell.json stores a number.
-omarchy bar set akitaonrails.ai-usagebar refreshIntervalSec 300 --json
+omarchy bar set iljafalk.ai-usage refreshIntervalSec 300 --json
 
 # Booleans also need --json. The default is true for drop-in compatibility.
-omarchy bar set akitaonrails.ai-usagebar showValue false --json
+omarchy bar set iljafalk.ai-usage showValue false --json
 
 # Opt in to the provider tag (ocg, opr, dsk) in front of the value. Default false.
-omarchy bar set akitaonrails.ai-usagebar showProvider true --json
+omarchy bar set iljafalk.ai-usage showProvider true --json
 
 # Show every configured provider's icon and usage at once. The default is false.
-omarchy bar set akitaonrails.ai-usagebar showAll true --json
+omarchy bar set iljafalk.ai-usage showAll true --json
 
 # Color-code bar values, panel meters, and the tooltip by usage level
 # (green → yellow → orange → red from the Omarchy theme). The default is false.
-omarchy bar set akitaonrails.ai-usagebar colorCodeUsage true --json
+omarchy bar set iljafalk.ai-usage colorCodeUsage true --json
 
 # Which quota window the top bar shows: auto (highest, the historical
 # default), session (5-hour), weekly (7-day), or monthly. The default is auto.
-omarchy bar set akitaonrails.ai-usagebar barWindow session
+omarchy bar set iljafalk.ai-usage barWindow session
 
 # How percentages read: used (the default) or left, the share that remains of
 # the same window. The bar still picks the most-used window; only the number
 # drawn for it changes.
-omarchy bar set akitaonrails.ai-usagebar showAs left
+omarchy bar set iljafalk.ai-usage showAs left
 
 # Provider logos in the top bar and panel. Off restores the generic robot icon
 # (and the short code on each chip with showAll). The default is true.
-omarchy bar set akitaonrails.ai-usagebar brandIcons false --json
+omarchy bar set iljafalk.ai-usage brandIcons false --json
 
 # Panel and settings language: auto (follow the system locale, the default),
 # en, ru, pt-BR, ko, or es.
-omarchy bar set akitaonrails.ai-usagebar uiLocale pt-BR
+omarchy bar set iljafalk.ai-usage uiLocale pt-BR
 ```
 
 The refresh interval is clamped to 30–3600 seconds. The `provider` setting

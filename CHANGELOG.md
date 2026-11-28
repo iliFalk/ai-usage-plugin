@@ -19,6 +19,17 @@
   in 1..=100, checked in Rust before anything is persisted. Until now both lived
   in `config.toml` only, and the panel could neither show nor change them.
 
+### Changed
+
+- **This fork carries its own identity.** The Omarchy plugin id is now
+  `iljafalk.ai-usage`, the repository, homepage, documentation and every
+  install command point at `https://github.com/iliFalk/ai-usage-plugin`, the AUR
+  packages are built as `ai-usagebar-ilifalk` and `ai-usagebar-ilifalk-bin`, and
+  the author and maintainer is `Ilja <ilja@falknest.net>`. The binary, the crate
+  and the `~/.config/ai-usagebar/` path keep their names: they are functional,
+  not a brand.
+- Upstream traceability: this is a fork of [`AkitaOnRails/ai-usagebar`](https://github.com/AkitaOnRails/ai-usagebar) and `LICENSE` keeps its `Copyright (c) 2026 AkitaOnRails` notice as MIT requires, alongside `Copyright (c) 2026 Ilja`.
+
 ### Removed
 
 - **Every surface except the Omarchy panel.** The Waybar widget
@@ -2516,7 +2527,7 @@
   binaries and an "AI Usage" Start-menu shortcut for the tray, and a
   `publish-scoop` job in the release workflow pushes the freshly pinned
   manifest (version from the tag, hash recomputed from the published
-  `.sha256` sidecar) to the `akitaonrails/scoop-bucket` repo when
+  `.sha256` sidecar) to the project's Scoop bucket repo when
   `SCOOP_BUCKET_TOKEN` is set. Proposal: #216.
 - **Reset-credit expiry tooltip on Windows.** The Codex and SuperGrok reset
   credit row keeps its compact available-count badge and now reveals each
@@ -2707,7 +2718,7 @@
 - **Omarchy top bar usage-window picker.** The Quattro settings page gains a
   **Top bar usage window** dropdown (`auto` / `session` / `weekly` /
   `monthly`), also settable with
-  `omarchy bar set akitaonrails.ai-usagebar barWindow session` that pins the
+  `omarchy bar set iljafalk.ai-usage barWindow session` that pins the
   bar label to one quota window instead of always showing the highest percent;
   the tooltip and panel hero echo the pinned value. `session` pins the 5-hour
   window, `weekly` the 7-day window, and `monthly` the monthly pool where one
@@ -3295,7 +3306,7 @@
 
 - The Omarchy Quattro plugin can show which provider the bar entry is about.
   **Show provider name in the top bar** — a new opt-in toggle beside the
-  existing usage-value one, or `omarchy bar set akitaonrails.ai-usagebar
+  existing usage-value one, or `omarchy bar set iljafalk.ai-usage
   showProvider true --json` — prefixes the label with the provider's
   three-letter code, the same one Waybar's `{vendor_short}` prints, so the
   entry reads `cld 29%` or `gpt 95%` after the icon. It matters most on a bar
@@ -4065,7 +4076,7 @@
     politely; other vendors still start immediately.
 - **"Iniciar no login" (start at login) toggle** in the macOS menu-bar app's
   Preferences. Flipping it on installs a per-user LaunchAgent
-  (`~/Library/LaunchAgents/com.akitaonrails.ai-usagebar-menubar.plist`) pointing
+  (`~/Library/LaunchAgents/com.iljafalk.ai-usage-menubar.plist`) pointing
   at the running binary, so the app comes up automatically at each login; off
   removes it. This is the GUI equivalent of `macos/install-agent.sh` — no
   `launchctl` needed. macOS only: the app is a menu-bar agent that doesn't exist
@@ -5053,99 +5064,99 @@ vendors. Highlights:
 - Live API smoke test suite (`make smoke`) that exercises the real
   undocumented endpoints to detect schema drift before users do.
 
-[Unreleased]: https://github.com/akitaonrails/ai-usagebar/compare/v1.45.0...HEAD
-[1.45.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.44.0...v1.45.0
-[1.44.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.43.0...v1.44.0
-[1.43.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.42.0...v1.43.0
-[1.42.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.41.0...v1.42.0
-[1.41.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.40.1...v1.41.0
-[1.40.1]: https://github.com/akitaonrails/ai-usagebar/compare/v1.40.0...v1.40.1
-[1.40.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.39.1...v1.40.0
-[1.39.1]: https://github.com/akitaonrails/ai-usagebar/compare/v1.39.0...v1.39.1
-[1.39.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.38.1...v1.39.0
-[1.38.1]: https://github.com/akitaonrails/ai-usagebar/compare/v1.38.0...v1.38.1
-[1.38.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.37.0...v1.38.0
-[1.37.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.36.0...v1.37.0
-[1.36.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.35.0...v1.36.0
-[1.35.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.34.0...v1.35.0
-[1.34.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.33.0...v1.34.0
-[1.33.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.32.0...v1.33.0
-[1.32.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.31.0...v1.32.0
-[1.31.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.30.0...v1.31.0
-[1.30.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.29.0...v1.30.0
-[1.29.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.28.0...v1.29.0
-[1.28.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.27.0...v1.28.0
-[1.27.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.26.0...v1.27.0
-[1.26.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.25.0...v1.26.0
-[1.25.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.24.0...v1.25.0
-[1.24.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.23.0...v1.24.0
-[1.23.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.22.0...v1.23.0
-[1.22.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.21.1...v1.22.0
-[1.21.1]: https://github.com/akitaonrails/ai-usagebar/compare/v1.21.0...v1.21.1
-[1.21.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.20.2...v1.21.0
-[1.20.2]: https://github.com/akitaonrails/ai-usagebar/compare/v1.20.1...v1.20.2
-[1.20.1]: https://github.com/akitaonrails/ai-usagebar/compare/v1.19.0...v1.20.1
-[1.19.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.18.1...v1.19.0
-[1.18.1]: https://github.com/akitaonrails/ai-usagebar/compare/v1.18.0...v1.18.1
-[1.18.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.17.1...v1.18.0
-[1.17.1]: https://github.com/akitaonrails/ai-usagebar/compare/v1.17.0...v1.17.1
-[1.17.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.16.0...v1.17.0
-[1.16.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.15.0...v1.16.0
-[1.15.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.14.0...v1.15.0
-[1.14.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.13.0...v1.14.0
-[1.13.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.12.0...v1.13.0
-[1.12.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.11.0...v1.12.0
-[1.11.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.10.0...v1.11.0
-[1.10.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.9.1...v1.10.0
-[1.9.1]: https://github.com/akitaonrails/ai-usagebar/compare/v1.9.0...v1.9.1
-[1.9.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.8.0...v1.9.0
-[1.8.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.7.0...v1.8.0
-[1.7.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.6.0...v1.7.0
-[1.6.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.5.2...v1.6.0
-[1.5.2]: https://github.com/akitaonrails/ai-usagebar/compare/v1.5.1...v1.5.2
-[1.5.1]: https://github.com/akitaonrails/ai-usagebar/compare/v1.5.0...v1.5.1
-[1.5.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.4.0...v1.5.0
-[1.4.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.3.1...v1.4.0
-[1.3.1]: https://github.com/akitaonrails/ai-usagebar/compare/v1.3.0...v1.3.1
-[1.3.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.2.0...v1.3.0
-[1.2.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.1.0...v1.2.0
-[1.1.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.0.3...v1.1.0
-[1.0.3]: https://github.com/akitaonrails/ai-usagebar/compare/v1.0.2...v1.0.3
-[1.0.2]: https://github.com/akitaonrails/ai-usagebar/compare/v1.0.1...v1.0.2
-[1.0.1]: https://github.com/akitaonrails/ai-usagebar/compare/v1.0.0...v1.0.1
-[1.0.0]: https://github.com/akitaonrails/ai-usagebar/compare/v0.22.0...v1.0.0
-[0.22.0]: https://github.com/akitaonrails/ai-usagebar/compare/v0.21.0...v0.22.0
-[0.21.0]: https://github.com/akitaonrails/ai-usagebar/compare/v0.20.1...v0.21.0
-[0.20.1]: https://github.com/akitaonrails/ai-usagebar/compare/v0.20.0...v0.20.1
-[0.20.0]: https://github.com/akitaonrails/ai-usagebar/compare/v0.19.0...v0.20.0
-[0.19.0]: https://github.com/akitaonrails/ai-usagebar/compare/v0.18.0...v0.19.0
-[0.18.0]: https://github.com/akitaonrails/ai-usagebar/compare/v0.17.2...v0.18.0
-[0.17.2]: https://github.com/akitaonrails/ai-usagebar/compare/v0.17.1...v0.17.2
-[0.17.1]: https://github.com/akitaonrails/ai-usagebar/compare/v0.16.0...v0.17.1
-[0.16.0]: https://github.com/akitaonrails/ai-usagebar/compare/v0.15.0...v0.16.0
-[0.15.0]: https://github.com/akitaonrails/ai-usagebar/compare/v0.14.0...v0.15.0
-[0.14.0]: https://github.com/akitaonrails/ai-usagebar/compare/v0.13.0...v0.14.0
-[0.13.0]: https://github.com/akitaonrails/ai-usagebar/compare/v0.12.0...v0.13.0
-[0.12.0]: https://github.com/akitaonrails/ai-usagebar/releases/tag/v0.12.0
-[0.11.0]: https://github.com/akitaonrails/ai-usagebar/releases/tag/v0.11.0
-[0.10.0]: https://github.com/akitaonrails/ai-usagebar/releases/tag/v0.10.0
-[0.9.0]: https://github.com/akitaonrails/ai-usagebar/releases/tag/v0.9.0
-[0.8.0]: https://github.com/akitaonrails/ai-usagebar/releases/tag/v0.8.0
-[0.7.2]: https://github.com/akitaonrails/ai-usagebar/releases/tag/v0.7.2
-[0.7.1]: https://github.com/akitaonrails/ai-usagebar/releases/tag/v0.7.1
-[0.7.0]: https://github.com/akitaonrails/ai-usagebar/releases/tag/v0.7.0
-[0.6.0]: https://github.com/akitaonrails/ai-usagebar/releases/tag/v0.6.0
-[0.5.1]: https://github.com/akitaonrails/ai-usagebar/releases/tag/v0.5.1
-[0.5.0]: https://github.com/akitaonrails/ai-usagebar/releases/tag/v0.5.0
-[0.4.5]: https://github.com/akitaonrails/ai-usagebar/releases/tag/v0.4.5
-[0.4.4]: https://github.com/akitaonrails/ai-usagebar/releases/tag/v0.4.4
-[0.4.3]: https://github.com/akitaonrails/ai-usagebar/releases/tag/v0.4.3
-[0.4.2]: https://github.com/akitaonrails/ai-usagebar/releases/tag/v0.4.2
-[0.4.1]: https://github.com/akitaonrails/ai-usagebar/releases/tag/v0.4.1
-[0.4.0]: https://github.com/akitaonrails/ai-usagebar/releases/tag/v0.4.0
-[0.3.3]: https://github.com/akitaonrails/ai-usagebar/releases/tag/v0.3.3
-[0.3.2]: https://github.com/akitaonrails/ai-usagebar/releases/tag/v0.3.2
-[0.3.1]: https://github.com/akitaonrails/ai-usagebar/releases/tag/v0.3.1
-[0.3.0]: https://github.com/akitaonrails/ai-usagebar/releases/tag/v0.3.0
-[0.2.0]: https://github.com/akitaonrails/ai-usagebar/releases/tag/v0.2.0
-[0.1.0]: https://github.com/akitaonrails/ai-usagebar/releases/tag/v0.1.0
+[Unreleased]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.45.0...HEAD
+[1.45.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.44.0...v1.45.0
+[1.44.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.43.0...v1.44.0
+[1.43.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.42.0...v1.43.0
+[1.42.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.41.0...v1.42.0
+[1.41.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.40.1...v1.41.0
+[1.40.1]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.40.0...v1.40.1
+[1.40.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.39.1...v1.40.0
+[1.39.1]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.39.0...v1.39.1
+[1.39.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.38.1...v1.39.0
+[1.38.1]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.38.0...v1.38.1
+[1.38.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.37.0...v1.38.0
+[1.37.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.36.0...v1.37.0
+[1.36.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.35.0...v1.36.0
+[1.35.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.34.0...v1.35.0
+[1.34.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.33.0...v1.34.0
+[1.33.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.32.0...v1.33.0
+[1.32.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.31.0...v1.32.0
+[1.31.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.30.0...v1.31.0
+[1.30.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.29.0...v1.30.0
+[1.29.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.28.0...v1.29.0
+[1.28.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.27.0...v1.28.0
+[1.27.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.26.0...v1.27.0
+[1.26.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.25.0...v1.26.0
+[1.25.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.24.0...v1.25.0
+[1.24.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.23.0...v1.24.0
+[1.23.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.22.0...v1.23.0
+[1.22.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.21.1...v1.22.0
+[1.21.1]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.21.0...v1.21.1
+[1.21.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.20.2...v1.21.0
+[1.20.2]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.20.1...v1.20.2
+[1.20.1]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.19.0...v1.20.1
+[1.19.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.18.1...v1.19.0
+[1.18.1]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.18.0...v1.18.1
+[1.18.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.17.1...v1.18.0
+[1.17.1]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.17.0...v1.17.1
+[1.17.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.16.0...v1.17.0
+[1.16.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.15.0...v1.16.0
+[1.15.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.14.0...v1.15.0
+[1.14.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.13.0...v1.14.0
+[1.13.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.12.0...v1.13.0
+[1.12.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.11.0...v1.12.0
+[1.11.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.10.0...v1.11.0
+[1.10.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.9.1...v1.10.0
+[1.9.1]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.9.0...v1.9.1
+[1.9.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.8.0...v1.9.0
+[1.8.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.7.0...v1.8.0
+[1.7.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.6.0...v1.7.0
+[1.6.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.5.2...v1.6.0
+[1.5.2]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.5.1...v1.5.2
+[1.5.1]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.5.0...v1.5.1
+[1.5.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.4.0...v1.5.0
+[1.4.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.3.1...v1.4.0
+[1.3.1]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.3.0...v1.3.1
+[1.3.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.2.0...v1.3.0
+[1.2.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.1.0...v1.2.0
+[1.1.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.0.3...v1.1.0
+[1.0.3]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.0.2...v1.0.3
+[1.0.2]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.0.1...v1.0.2
+[1.0.1]: https://github.com/iliFalk/ai-usage-plugin/compare/v1.0.0...v1.0.1
+[1.0.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v0.22.0...v1.0.0
+[0.22.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v0.21.0...v0.22.0
+[0.21.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v0.20.1...v0.21.0
+[0.20.1]: https://github.com/iliFalk/ai-usage-plugin/compare/v0.20.0...v0.20.1
+[0.20.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v0.19.0...v0.20.0
+[0.19.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v0.18.0...v0.19.0
+[0.18.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v0.17.2...v0.18.0
+[0.17.2]: https://github.com/iliFalk/ai-usage-plugin/compare/v0.17.1...v0.17.2
+[0.17.1]: https://github.com/iliFalk/ai-usage-plugin/compare/v0.16.0...v0.17.1
+[0.16.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v0.15.0...v0.16.0
+[0.15.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v0.14.0...v0.15.0
+[0.14.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v0.13.0...v0.14.0
+[0.13.0]: https://github.com/iliFalk/ai-usage-plugin/compare/v0.12.0...v0.13.0
+[0.12.0]: https://github.com/iliFalk/ai-usage-plugin/releases/tag/v0.12.0
+[0.11.0]: https://github.com/iliFalk/ai-usage-plugin/releases/tag/v0.11.0
+[0.10.0]: https://github.com/iliFalk/ai-usage-plugin/releases/tag/v0.10.0
+[0.9.0]: https://github.com/iliFalk/ai-usage-plugin/releases/tag/v0.9.0
+[0.8.0]: https://github.com/iliFalk/ai-usage-plugin/releases/tag/v0.8.0
+[0.7.2]: https://github.com/iliFalk/ai-usage-plugin/releases/tag/v0.7.2
+[0.7.1]: https://github.com/iliFalk/ai-usage-plugin/releases/tag/v0.7.1
+[0.7.0]: https://github.com/iliFalk/ai-usage-plugin/releases/tag/v0.7.0
+[0.6.0]: https://github.com/iliFalk/ai-usage-plugin/releases/tag/v0.6.0
+[0.5.1]: https://github.com/iliFalk/ai-usage-plugin/releases/tag/v0.5.1
+[0.5.0]: https://github.com/iliFalk/ai-usage-plugin/releases/tag/v0.5.0
+[0.4.5]: https://github.com/iliFalk/ai-usage-plugin/releases/tag/v0.4.5
+[0.4.4]: https://github.com/iliFalk/ai-usage-plugin/releases/tag/v0.4.4
+[0.4.3]: https://github.com/iliFalk/ai-usage-plugin/releases/tag/v0.4.3
+[0.4.2]: https://github.com/iliFalk/ai-usage-plugin/releases/tag/v0.4.2
+[0.4.1]: https://github.com/iliFalk/ai-usage-plugin/releases/tag/v0.4.1
+[0.4.0]: https://github.com/iliFalk/ai-usage-plugin/releases/tag/v0.4.0
+[0.3.3]: https://github.com/iliFalk/ai-usage-plugin/releases/tag/v0.3.3
+[0.3.2]: https://github.com/iliFalk/ai-usage-plugin/releases/tag/v0.3.2
+[0.3.1]: https://github.com/iliFalk/ai-usage-plugin/releases/tag/v0.3.1
+[0.3.0]: https://github.com/iliFalk/ai-usage-plugin/releases/tag/v0.3.0
+[0.2.0]: https://github.com/iliFalk/ai-usage-plugin/releases/tag/v0.2.0
+[0.1.0]: https://github.com/iliFalk/ai-usage-plugin/releases/tag/v0.1.0

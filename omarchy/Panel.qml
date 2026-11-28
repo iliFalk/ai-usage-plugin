@@ -12,7 +12,7 @@ import "I18n.js" as I18n
 // its button as this panel's anchor; collection stays in the Rust binary.
 Panel {
   id: root
-  moduleName: "akitaonrails.ai-usagebar"
+  moduleName: "iljafalk.ai-usage"
   manageIpc: false
 
   property var anchorItem: null

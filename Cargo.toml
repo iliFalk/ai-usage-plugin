@@ -5,10 +5,11 @@ edition = "2024"
 rust-version = "1.90"
 license = "MIT"
 description = "Data source for the Omarchy AI Usage panel: quota and balance for OpenCode Go, DeepSeek and OpenRouter"
+authors = ["Ilja <ilja@falknest.net>"]
 readme = "README.md"
-repository = "https://github.com/akitaonrails/ai-usagebar"
-homepage = "https://github.com/akitaonrails/ai-usagebar"
-documentation = "https://github.com/akitaonrails/ai-usagebar#readme"
+repository = "https://github.com/iliFalk/ai-usage-plugin"
+homepage = "https://github.com/iliFalk/ai-usage-plugin"
+documentation = "https://github.com/iliFalk/ai-usage-plugin#readme"
 keywords = ["omarchy", "quickshell", "usage", "quota"]
 categories = ["command-line-utilities"]
 

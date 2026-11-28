@@ -21,18 +21,18 @@ desktop integration to keep in step.
 Two pieces. The binary, from the AUR:
 
 ```bash
-yay -S ai-usagebar-bin      # prebuilt, both architectures
-# or: yay -S ai-usagebar    # compiles from source
+yay -S ai-usagebar-ilifalk-bin   # prebuilt, both architectures
+# or: yay -S ai-usagebar-ilifalk # compiles from source
 ```
 
 The panel, from this repository:
 
 ```bash
-omarchy plugin install akitaonrails/ai-usagebar
+omarchy plugin install iliFalk/ai-usage-plugin
 ```
 
 `omarchy plugin validate .` checks a checkout before you install it. Nix users
-can run the binary with `nix run github:akitaonrails/ai-usagebar`.
+can run the binary with `nix run github:iliFalk/ai-usage-plugin`.
 
 ## Configure
 
